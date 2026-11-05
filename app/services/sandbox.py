@@ -1,0 +1,165 @@
+"""Virtual Execution Sandbox for Autonomous Data Analysis Agents.
+Allows agents to write, execute, inspect, and delete Python programs in an isolated
+per-run workspace while protecting source documents as strictly READ-ONLY.
+"""
+from dataclasses import dataclass, field
+from pathlib import Path
+import os
+import subprocess
+import sys
+import time
+from typing import Any
+
+
+@dataclass
+class ExecutionResult:
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: float
+    output_files: list[str] = field(default_factory=list)
+    timed_out: bool = False
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "exit_code": self.exit_code,
+            "duration_ms": self.duration_ms,
+            "output_files": self.output_files,
+            "timed_out": self.timed_out,
+            "error": self.error,
+        }
+
+
+class AgentSandbox:
+    """Isolated execution harness for an agent run."""
+
+    def __init__(self, run_dir: Path, input_dir: Path):
+        self.run_dir = run_dir.resolve()
+        self.input_dir = input_dir.resolve()
+        self.sandbox_dir = (self.run_dir / "sandbox").resolve()
+        self.sandbox_dir.mkdir(parents=True, exist_ok=True)
+        # Point to virtualenv python if available, else current sys.executable
+        venv_py = sys.prefix + "/Scripts/python.exe" if os.name == "nt" else sys.prefix + "/bin/python"
+        self.python_bin = venv_py if os.path.exists(venv_py) else sys.executable
+
+    def _resolve_sandbox_path(self, relative_path: str) -> Path:
+        clean = Path(relative_path).name
+        target = (self.sandbox_dir / clean).resolve()
+        if not str(target).startswith(str(self.sandbox_dir)):
+            raise PermissionError(f"Path traversal detected: {relative_path}")
+        return target
+
+    def write_file(self, filename: str, content: str) -> dict[str, Any]:
+        """Creates or updates a file in the sandbox virtual workspace."""
+        path = self._resolve_sandbox_path(filename)
+        path.write_text(content, encoding="utf-8")
+        return {
+            "filename": path.name,
+            "size": path.stat().st_size,
+            "status": "written",
+            "path": str(path),
+        }
+
+    def read_file(self, filename: str) -> str:
+        """Reads a file from either the sandbox or the read-only input dir."""
+        s_path = self._resolve_sandbox_path(filename)
+        if s_path.is_file():
+            return s_path.read_text(encoding="utf-8", errors="replace")
+        i_path = (self.input_dir / Path(filename).name).resolve()
+        if i_path.is_file():
+            return i_path.read_text(encoding="utf-8", errors="replace")
+        raise FileNotFoundError(f"File not found in sandbox or input: {filename}")
+
+    def delete_file(self, filename: str) -> dict[str, Any]:
+        """Deletes a file from the sandbox workspace. Strictly forbids deleting inputs."""
+        clean = Path(filename).name
+        # Guard against touching input directory
+        input_candidate = self.input_dir / clean
+        if input_candidate.is_file():
+            raise PermissionError(f"Cannot delete source document: {filename} is protected as read-only.")
+
+        path = self._resolve_sandbox_path(filename)
+        if not path.exists():
+            raise FileNotFoundError(f"File does not exist in sandbox: {filename}")
+        path.unlink()
+        return {"filename": clean, "status": "deleted"}
+
+    def list_files(self) -> list[dict[str, Any]]:
+        """Lists files in the sandbox workspace."""
+        files = []
+        for p in self.sandbox_dir.iterdir():
+            if p.is_file():
+                files.append({
+                    "name": p.name,
+                    "size": p.stat().st_size,
+                    "modified": p.stat().st_mtime,
+                    "is_script": p.suffix == ".py",
+                })
+        return sorted(files, key=lambda x: x["name"])
+
+    def execute_python(self, script_name: str, timeout_seconds: int = 25) -> ExecutionResult:
+        """Executes a Python script inside the sandbox workspace."""
+        script_path = self._resolve_sandbox_path(script_name)
+        if not script_path.is_file():
+            return ExecutionResult(
+                stdout="",
+                stderr=f"Script file '{script_name}' does not exist in sandbox.",
+                exit_code=1,
+                duration_ms=0,
+                error="ScriptNotFound",
+            )
+
+        before_files = set(p.name for p in self.sandbox_dir.iterdir() if p.is_file())
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["SOURCE_INPUT_DIR"] = str(self.input_dir)
+        env["SANDBOX_DIR"] = str(self.sandbox_dir)
+        # Avoid writing bytecode
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+        start_t = time.perf_counter()
+        try:
+            proc = subprocess.run(
+                [self.python_bin, str(script_path)],
+                cwd=str(self.sandbox_dir),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+            duration_ms = round((time.perf_counter() - start_t) * 1000, 2)
+            after_files = set(p.name for p in self.sandbox_dir.iterdir() if p.is_file())
+            new_files = sorted(list(after_files - before_files))
+
+            return ExecutionResult(
+                stdout=proc.stdout or "",
+                stderr=proc.stderr or "",
+                exit_code=proc.returncode,
+                duration_ms=duration_ms,
+                output_files=new_files,
+                timed_out=False,
+            )
+        except subprocess.TimeoutExpired:
+            duration_ms = round((time.perf_counter() - start_t) * 1000, 2)
+            return ExecutionResult(
+                stdout="",
+                stderr=f"Execution timed out after {timeout_seconds} seconds.",
+                exit_code=-1,
+                duration_ms=duration_ms,
+                timed_out=True,
+                error="TimeoutExpired",
+            )
+        except Exception as exc:
+            duration_ms = round((time.perf_counter() - start_t) * 1000, 2)
+            return ExecutionResult(
+                stdout="",
+                stderr=str(exc),
+                exit_code=1,
+                duration_ms=duration_ms,
+                error=str(exc),
+            )
+

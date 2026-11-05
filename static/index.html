@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tracewise · PBRER Document Intelligence & Agent Autonomy</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo-mark">T</div>
+      <div class="brand-text">
+        <span class="brand-title">tracewise</span>
+        <span class="brand-sub">PBRER DOCUMENT INTELLIGENCE &bull; ICH E2C(R2)</span>
+      </div>
+    </div>
+    
+    <div class="topbar-center">
+      <div class="model-badge" id="modelBadge">
+        <span class="pulse-dot"></span>
+        <span class="badge-label">AWS Bedrock Sonnet / Autonomous Sandbox Active</span>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="btnDemoBundle" class="btn btn-secondary">
+        <span class="btn-icon">⚡</span> Load PBRER Sample Bundle
+      </button>
+      <button id="btnReset" class="btn btn-ghost" title="Reset Workspace">↺ Reset</button>
+    </div>
+  </header>
+
+  <!-- MAIN CONTAINER -->
+  <main class="app-container">
+    
+    <!-- STAGE 1: INGESTION & BIFURCATED UPLOAD SECTION -->
+    <section id="ingestionSection" class="ingestion-section">
+      <div class="section-intro">
+        <div>
+          <span class="badge-eyebrow">REGULATORY REPORT HARNESS</span>
+          <h1>Reproduce clinical & safety reports with <span class="gradient-text">verifiable source rules</span>.</h1>
+          <p class="subtitle">Upload target PBRER structure and heterogeneous source Excel data. Autonomous agents write & execute sandboxed Python to compile deterministic lineage.</p>
+        </div>
+      </div>
+
+      <div class="bifurcated-upload-grid">
+        <!-- Target Document Upload -->
+        <div class="upload-card target-card">
+          <div class="upload-header">
+            <div class="upload-badge target-tag">TARGET REPORT (SKELETAL)</div>
+            <h3>Reference PBRER Document</h3>
+            <p>Annual report structure to preserve (DOCX or PDF)</p>
+          </div>
+          <label class="drop-zone" for="targetFileInput">
+            <div class="drop-icon">▤</div>
+            <div class="drop-text">
+              <strong>Select or drop Target PBRER Report</strong>
+              <small>Supports .docx, .pdf &bull; Extracts section hierarchy</small>
+            </div>
+            <input type="file" id="targetFileInput" accept=".docx,.pdf">
+          </label>
+          <div id="targetFileStatus" class="file-status muted">No target file chosen</div>
+        </div>
+
+        <!-- Source Documents Upload -->
+        <div class="upload-card source-card">
+          <div class="upload-header">
+            <div class="upload-badge source-tag">EVIDENCE SOURCES</div>
+            <h3>Source Data Files</h3>
+            <p>Clinical trials, ICSR line listings, sales DDD, safety signals</p>
+          </div>
+          <label class="drop-zone" for="sourceFilesInput">
+            <div class="drop-icon">▧</div>
+            <div class="drop-text">
+              <strong>Select or drop Source Spreadsheets</strong>
+              <small>Multi-file .xlsx, .csv, .xls &bull; Protected as Read-Only</small>
+            </div>
+            <input type="file" id="sourceFilesInput" accept=".xlsx,.xls,.csv" multiple>
+          </label>
+          <div id="sourceFilesStatus" class="file-status muted">No source files chosen</div>
+        </div>
+      </div>
+
+      <!-- Launch Bar -->
+      <div class="launch-bar">
+        <div class="tenant-input-group">
+          <label for="tenantInput">Workspace / Tenant:</label>
+          <input type="text" id="tenantInput" value="Apex-BioPharma-PBRER-2024" spellcheck="false">
+        </div>
+        <div class="sandbox-security-pill">
+          <span class="lock-icon">🔒</span>
+          <span>Source files are mounted <b>Read-Only</b>. Agents execute scripts inside an isolated per-run sandbox.</span>
+        </div>
+        <button id="btnLaunchAgents" class="btn btn-primary" disabled>
+          <span>Launch Autonomous Agents</span>
+          <span class="arrow">➔</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- STAGE 2: BIFURCATED MULTI-AGENT WORKSPACE (HIDDEN UNTIL LOADED) -->
+    <section id="workspaceSection" class="workspace-section hidden">
+      
+      <!-- TOP STATUS / ORCHESTRATION ROSTER -->
+      <div class="orchestration-banner">
+        <div class="run-info">
+          <span class="pulse-indicator"></span>
+          <div>
+            <strong id="runIdDisplay">Run Active</strong>
+            <small id="runStatsDisplay">Connecting to agent telemetry...</small>
+          </div>
+        </div>
+
+        <!-- Agent Roster -->
+        <div class="agent-roster">
+          <div class="agent-chip active" id="chip-orchestrator">
+            <span class="agent-avatar">👔</span>
+            <div class="agent-meta">
+              <span class="agent-name">Lead PV Strategist</span>
+              <span class="agent-status">Orchestrator</span>
+            </div>
+          </div>
+          <div class="agent-chip" id="chip-exposure">
+            <span class="agent-avatar">📊</span>
+            <div class="agent-meta">
+              <span class="agent-name">Exposure Analyst</span>
+              <span class="agent-status">Sec 5 Specialist</span>
+            </div>
+          </div>
+          <div class="agent-chip" id="chip-safety">
+            <span class="agent-avatar">🛡️</span>
+            <div class="agent-meta">
+              <span class="agent-name">ICSR Specialist</span>
+              <span class="agent-status">Sec 7 Tabulation</span>
+            </div>
+          </div>
+          <div class="agent-chip" id="chip-signals">
+            <span class="agent-avatar">🚨</span>
+            <div class="agent-meta">
+              <span class="agent-name">Signal Specialist</span>
+              <span class="agent-status">Sec 9 Governance</span>
+            </div>
+          </div>
+          <div class="agent-chip" id="chip-auditor">
+            <span class="agent-avatar">🔍</span>
+            <div class="agent-meta">
+              <span class="agent-name">Lineage Auditor</span>
+              <span class="agent-status">Rule Verification</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3-PANEL BIFURCATED WORKSPACE -->
+      <div class="panels-grid">
+        
+        <!-- LEFT PANEL: Target Skeletal Outline & Section Mapping -->
+        <aside class="panel left-panel">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-eyebrow">DOCUMENT SKELETAL</span>
+              <h3>Target Report Outline</h3>
+            </div>
+            <span class="counter-badge" id="sectionCountBadge">0 sections</span>
+          </div>
+
+          <div class="panel-search">
+            <input type="text" id="sectionSearchInput" placeholder="Filter sections by title...">
+          </div>
+
+          <div id="outlineContainer" class="outline-list">
+            <div class="empty-state-card">
+              <p>Upload a target document or click "Load PBRER Sample Bundle" to view the skeletal structure.</p>
+            </div>
+          </div>
+
+          <div class="panel-footer-note">
+            <span>● Click any section to view source rules & submit reviewer notes</span>
+          </div>
+        </aside>
+
+        <!-- CENTER PANEL: Agent Autonomy Sandbox & AG-UI Telemetry -->
+        <section class="panel center-panel">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-eyebrow">AG-UI STREAM &bull; AUTONOMOUS SANDBOX</span>
+              <h3>Agent Sandbox & Telemetry</h3>
+            </div>
+            <div class="feed-filter-tabs">
+              <button class="filter-tab active" data-filter="all">All Events</button>
+              <button class="filter-tab" data-filter="code">Code & Exec</button>
+              <button class="filter-tab" data-filter="a2a">A2A Flows</button>
+              <button class="filter-tab" data-filter="rules">Rules</button>
+            </div>
+          </div>
+
+          <!-- Live AG-UI Event Telemetry Feed -->
+          <div id="agUiFeed" class="ag-ui-feed">
+            <div class="empty-feed-placeholder">
+              <span class="empty-icon">⚡</span>
+              <h4>Agent Sandbox Ready</h4>
+              <p>Launch the agents to watch live thoughts, A2A communication, Python code execution, and rule creation.</p>
+            </div>
+          </div>
+
+          <!-- Sandbox Files Quick Inspector -->
+          <div class="sandbox-files-tray">
+            <div class="tray-header">
+              <span><b>Virtual Workspace Files</b> (Sandbox .py & .json artifacts):</span>
+              <span id="sandboxFilesCount" class="tray-count">0 files</span>
+            </div>
+            <div id="sandboxFilesList" class="sandbox-chips-list">
+              <span class="muted-note">No generated scripts yet</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- RIGHT PANEL: Data Sources & Interactive AG-UI Focus -->
+        <aside class="panel right-panel">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <span class="panel-eyebrow">SOURCE REPOSITORY &bull; READ-ONLY</span>
+              <h3>Evidence Data Sources</h3>
+            </div>
+            <span class="counter-badge" id="sourceCountBadge">0 files</span>
+          </div>
+
+          <!-- Live Agent Focus Indicator (AG-UI protocol beacon) -->
+          <div id="agentFocusBeacon" class="agent-focus-beacon idle">
+            <span class="beacon-dot"></span>
+            <div class="beacon-content">
+              <span class="beacon-label">AGENT FOCUS BEACON</span>
+              <span class="beacon-status" id="beaconStatusText">Idle &bull; Waiting for agent execution</span>
+            </div>
+          </div>
+
+          <!-- Source Files Tabs -->
+          <div id="sourceFilesTabs" class="source-files-tabs"></div>
+
+          <!-- Sheet & Data Inspector -->
+          <div id="sourceDataInspector" class="source-data-inspector">
+            <div class="empty-inspector">
+              <p>Select a source spreadsheet above to inspect sheets, columns, and data cells.</p>
+            </div>
+          </div>
+
+          <!-- Bottom Action: View Complete Matrix -->
+          <div class="matrix-action-bar">
+            <button id="btnViewMatrix" class="btn btn-secondary full-width">
+              <span>📋 View Full Lineage Matrix</span>
+            </button>
+          </div>
+        </aside>
+
+      </div>
+    </section>
+
+    <!-- MODAL / DRAWER: SECTION DETAIL & USER NOTES -->
+    <div id="sectionModal" class="modal-backdrop hidden">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <div>
+            <span class="modal-eyebrow" id="modalSectionId">Section 5.1</span>
+            <h2 id="modalSectionTitle">Cumulative Subject Exposure in Clinical Trials</h2>
+          </div>
+          <button id="modalCloseBtn" class="close-btn">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <!-- Section Mapping Status -->
+          <div class="section-meta-row">
+            <div class="meta-item">
+              <label>Status:</label>
+              <span id="modalSectionStatus" class="status-pill green">Rules Compiled</span>
+            </div>
+            <div class="meta-item">
+              <label>Lineage Confidence:</label>
+              <span id="modalSectionConfidence" class="confidence-val">98%</span>
+            </div>
+          </div>
+
+          <!-- Target Text -->
+          <div class="modal-section-box">
+            <h4>Target Reference Extract</h4>
+            <div id="modalTargetText" class="target-text-preview">Target text excerpt</div>
+          </div>
+
+          <!-- Mapped Sources & Coordinates -->
+          <div class="modal-section-box">
+            <h4>Mapped Source Documents & Cell Ranges</h4>
+            <div id="modalMappedSources" class="mapped-sources-list"></div>
+          </div>
+
+          <!-- Deterministic Rule & Formula -->
+          <div class="modal-section-box">
+            <h4>LLM / Agent Formulated Lineage Rules</h4>
+            <div id="modalRulesList" class="rules-container"></div>
+          </div>
+
+          <!-- Python Program Used -->
+          <div class="modal-section-box">
+            <h4>Sandboxed Python Program</h4>
+            <pre class="code-preview"><code id="modalPythonCode"># Python code executed in sandbox</code></pre>
+          </div>
+
+          <!-- USER NOTES / FEEDBACK GUIDANCE -->
+          <div class="modal-section-box user-guidance-box">
+            <h4>Reviewer Feedback & Domain Notes</h4>
+            <p class="box-desc">Instruct the autonomous agent on domain exclusions, date ranges, or calculations for this section.</p>
+            
+            <div id="modalExistingNotes" class="existing-notes-list"></div>
+
+            <div class="note-input-row">
+              <textarea id="modalNoteInput" placeholder="Add reviewer note or instruction for the agent (e.g., 'Ensure open-label extension study NEX-401 is included with proper footnote')..." rows="3"></textarea>
+              <button id="btnSubmitNote" class="btn btn-primary">
+                <span>Submit Guidance to Agent</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: FULL AUDIT DOSSIER / LINEAGE MATRIX -->
+    <div id="matrixModal" class="modal-backdrop hidden">
+      <div class="modal-dialog large">
+        <div class="modal-header">
+          <div>
+            <span class="modal-eyebrow">REGULATORY AUDIT DOSSIER</span>
+            <h2>Complete PBRER Section-to-Source Lineage Matrix</h2>
+          </div>
+          <button id="matrixCloseBtn" class="close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="matrix-table-wrapper">
+            <table class="matrix-table" id="matrixTable">
+              <thead>
+                <tr>
+                  <th>Section</th>
+                  <th>Status</th>
+                  <th>Source File & Sheet</th>
+                  <th>Coordinates / Columns</th>
+                  <th>Lineage Rule / Logic</th>
+                  <th>Reviewer Notes</th>
+                </tr>
+              </thead>
+              <tbody id="matrixTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btnExportMatrix" class="btn btn-secondary">Download Matrix JSON</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- SCRIPT -->
+  <script src="/static/app.js"></script>
+</body>
+</html>
