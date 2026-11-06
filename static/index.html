@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tracewise · PBRER Document Intelligence & Agent Autonomy</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <title>Tracewise · PBRER Report Map</title>
+  <link rel="stylesheet" href="/static/styles.css?v=5">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -23,7 +23,7 @@
     <div class="topbar-center">
       <div class="model-badge" id="modelBadge">
         <span class="pulse-dot"></span>
-        <span class="badge-label">AWS Bedrock Sonnet / Autonomous Sandbox Active</span>
+        <span class="badge-label" id="modelBadgeLabel">Checking model status…</span>
       </div>
     </div>
 
@@ -43,8 +43,8 @@
       <div class="section-intro">
         <div>
           <span class="badge-eyebrow">REGULATORY REPORT HARNESS</span>
-          <h1>Reproduce clinical & safety reports with <span class="gradient-text">verifiable source rules</span>.</h1>
-          <p class="subtitle">Upload target PBRER structure and heterogeneous source Excel data. Autonomous agents write & execute sandboxed Python to compile deterministic lineage.</p>
+          <h1>Build a traceable <span class="gradient-text">PBRER review</span>.</h1>
+          <p class="subtitle">Pair the report outline with clinical, exposure and safety evidence. Follow every section from source files to review-ready lineage.</p>
         </div>
       </div>
 
@@ -72,15 +72,15 @@
           <div class="upload-header">
             <div class="upload-badge source-tag">EVIDENCE SOURCES</div>
             <h3>Source Data Files</h3>
-            <p>Clinical trials, ICSR line listings, sales DDD, safety signals</p>
+            <p>CSMRs, ICSR line listings, literature, and supporting evidence</p>
           </div>
           <label class="drop-zone" for="sourceFilesInput">
             <div class="drop-icon">▧</div>
             <div class="drop-text">
               <strong>Select or drop Source Spreadsheets</strong>
-              <small>Multi-file .xlsx, .csv, .xls &bull; Protected as Read-Only</small>
+              <small>Multi-file .xlsx, .xls, .csv, .pdf, .docx &bull; Read-only</small>
             </div>
-            <input type="file" id="sourceFilesInput" accept=".xlsx,.xls,.csv" multiple>
+            <input type="file" id="sourceFilesInput" accept=".xlsx,.xls,.csv,.pdf,.docx" multiple>
           </label>
           <div id="sourceFilesStatus" class="file-status muted">No source files chosen</div>
         </div>
@@ -94,124 +94,127 @@
         </div>
         <div class="sandbox-security-pill">
           <span class="lock-icon">🔒</span>
-          <span>Source files are mounted <b>Read-Only</b>. Agents execute scripts inside an isolated per-run sandbox.</span>
+          <span>Evidence stays <b>read-only</b>. Each run gets an isolated workspace.</span>
         </div>
         <button id="btnLaunchAgents" class="btn btn-primary" disabled>
-          <span>Launch Autonomous Agents</span>
+          <span>Run report review</span>
           <span class="arrow">➔</span>
         </button>
       </div>
     </section>
 
-    <!-- STAGE 2: BIFURCATED MULTI-AGENT WORKSPACE (HIDDEN UNTIL LOADED) -->
+    <!-- STAGE 2: LIVE REPORT WORKSPACE (HIDDEN UNTIL LOADED) -->
     <section id="workspaceSection" class="workspace-section hidden">
+      <div class="run-workspace-heading">
+        <button id="btnBackToUpload" class="btn btn-ghost back-to-upload" type="button">← Documents</button>
+        <div class="run-title">
+          <span class="badge-eyebrow">LIVE PBRER WORKSPACE</span>
+          <h1>Section 16.3 live review</h1>
+          <p id="workspaceSubtitle">Focused risk evaluation, complete report and linked source evidence.</p>
+        </div>
+        <div class="run-live-pill" id="runLivePill">
+          <span class="pulse-dot"></span>
+          <span id="runPhaseStatus">Preparing run</span>
+        </div>
+      </div>
       
       <!-- TOP STATUS / ORCHESTRATION ROSTER -->
       <div class="orchestration-banner">
         <div class="run-info">
           <span class="pulse-indicator"></span>
           <div>
-            <strong id="runIdDisplay">Run Active</strong>
-            <small id="runStatsDisplay">Connecting to agent telemetry...</small>
+            <strong id="runIdDisplay">Report run</strong>
+            <small id="runStatsDisplay">Waiting to start</small>
           </div>
         </div>
 
-        <!-- Agent Roster -->
+        <div class="section-progress-summary" aria-live="polite">
+          <div class="progress-label-row">
+            <span>SECTION REVIEW</span>
+            <strong><span id="completedSectionCount">0</span> / <span id="totalSectionCount">0</span> complete</strong>
+          </div>
+          <div class="progress-track"><span id="sectionProgressBar"></span></div>
+          <div class="status-counts">
+            <span class="count-completed"><b id="completedCount">0</b> completed</span>
+            <span class="count-active"><b id="activeCount">0</b> active</span>
+            <span class="count-pending"><b id="pendingCount">0</b> pending</span>
+          </div>
+        </div>
+
+        <!-- Parallel section specialists -->
         <div class="agent-roster">
+          <span class="workflow-roster-label">A2A · PARALLEL</span>
           <div class="agent-chip active" id="chip-orchestrator">
-            <span class="agent-avatar">👔</span>
+            <span class="agent-avatar">◎</span>
             <div class="agent-meta">
-              <span class="agent-name">Lead PV Strategist</span>
-              <span class="agent-status">Orchestrator</span>
+              <span class="agent-name">Orchestrator</span>
+              <span class="agent-status">Section 16.3</span>
             </div>
           </div>
-          <div class="agent-chip" id="chip-exposure">
-            <span class="agent-avatar">📊</span>
-            <div class="agent-meta">
-              <span class="agent-name">Exposure Analyst</span>
-              <span class="agent-status">Sec 5 Specialist</span>
-            </div>
-          </div>
-          <div class="agent-chip" id="chip-safety">
-            <span class="agent-avatar">🛡️</span>
-            <div class="agent-meta">
-              <span class="agent-name">ICSR Specialist</span>
-              <span class="agent-status">Sec 7 Tabulation</span>
-            </div>
-          </div>
-          <div class="agent-chip" id="chip-signals">
-            <span class="agent-avatar">🚨</span>
-            <div class="agent-meta">
-              <span class="agent-name">Signal Specialist</span>
-              <span class="agent-status">Sec 9 Governance</span>
-            </div>
-          </div>
-          <div class="agent-chip" id="chip-auditor">
-            <span class="agent-avatar">🔍</span>
-            <div class="agent-meta">
-              <span class="agent-name">Lineage Auditor</span>
-              <span class="agent-status">Rule Verification</span>
-            </div>
-          </div>
+          <span class="parallel-agent-count" id="parallelAgentCount">0 specialists</span>
         </div>
       </div>
 
       <!-- 3-PANEL BIFURCATED WORKSPACE -->
-      <div class="panels-grid">
+      <div class="panels-grid" id="panelsGrid">
+        <svg id="agentFlowOverlay" class="agent-flow-overlay" aria-hidden="true"></svg>
+        <div id="agentTokenLayer" class="agent-token-layer" aria-hidden="true"></div>
         
         <!-- LEFT PANEL: Target Skeletal Outline & Section Mapping -->
         <aside class="panel left-panel">
           <div class="panel-header">
             <div class="panel-title-group">
-              <span class="panel-eyebrow">DOCUMENT SKELETAL</span>
-              <h3>Target Report Outline</h3>
+              <span class="panel-eyebrow">FOCUSED SCOPE</span>
+              <h3>Section 16.3</h3>
             </div>
             <span class="counter-badge" id="sectionCountBadge">0 sections</span>
           </div>
 
           <div class="panel-search">
-            <input type="text" id="sectionSearchInput" placeholder="Filter sections by title...">
+            <input type="text" id="sectionSearchInput" placeholder="Find a subsection…">
           </div>
 
           <div id="outlineContainer" class="outline-list">
             <div class="empty-state-card">
-              <p>Upload a target document or click "Load PBRER Sample Bundle" to view the skeletal structure.</p>
+              <p>Upload a target report to build its section map.</p>
             </div>
           </div>
 
           <div class="panel-footer-note">
-            <span>● Click any section to view source rules & submit reviewer notes</span>
+            <span>Open a subsection to jump to its report text.</span>
           </div>
         </aside>
 
-        <!-- CENTER PANEL: Agent Autonomy Sandbox & AG-UI Telemetry -->
+        <!-- CENTER PANEL: Full Report and Live Agent Activity -->
         <section class="panel center-panel">
           <div class="panel-header">
             <div class="panel-title-group">
-              <span class="panel-eyebrow">AG-UI STREAM &bull; AUTONOMOUS SANDBOX</span>
-              <h3>Agent Sandbox & Telemetry</h3>
-            </div>
-            <div class="feed-filter-tabs">
-              <button class="filter-tab active" data-filter="all">All Events</button>
-              <button class="filter-tab" data-filter="code">Code & Exec</button>
-              <button class="filter-tab" data-filter="a2a">A2A Flows</button>
-              <button class="filter-tab" data-filter="rules">Rules</button>
+              <span class="panel-eyebrow">SOURCE REPORT</span>
+              <h3 id="reportDocumentTitle">Full report</h3>
             </div>
           </div>
 
-          <!-- Live AG-UI Event Telemetry Feed -->
-          <div id="agUiFeed" class="ag-ui-feed">
-            <div class="empty-feed-placeholder">
-              <span class="empty-icon">⚡</span>
-              <h4>Agent Sandbox Ready</h4>
-              <p>Launch the agents to watch live thoughts, A2A communication, Python code execution, and rule creation.</p>
+          <div class="orchestrator-stage" id="orchestratorStage">
+            <span class="orchestrator-orbit" id="orchestratorAgent" aria-hidden="true">◎</span>
+            <div class="orchestrator-copy">
+              <strong>Section 16.3 orchestrator</strong>
+              <span id="agentFocusBeacon" class="agent-focus-line">Waiting for report review</span>
             </div>
           </div>
+
+          <div id="reportDocumentViewer" class="report-document-viewer">
+            <div class="empty-feed-placeholder">The complete uploaded report will appear here.</div>
+          </div>
+
+          <details class="live-activity-details">
+            <summary><span>Live agent activity</span><span id="activityCount">0 events</span></summary>
+            <div id="agUiFeed" class="ag-ui-feed"></div>
+          </details>
 
           <!-- Sandbox Files Quick Inspector -->
           <div class="sandbox-files-tray">
             <div class="tray-header">
-              <span><b>Virtual Workspace Files</b> (Sandbox .py & .json artifacts):</span>
+              <span><b>Run artifacts</b></span>
               <span id="sandboxFilesCount" class="tray-count">0 files</span>
             </div>
             <div id="sandboxFilesList" class="sandbox-chips-list">
@@ -224,35 +227,26 @@
         <aside class="panel right-panel">
           <div class="panel-header">
             <div class="panel-title-group">
-              <span class="panel-eyebrow">SOURCE REPOSITORY &bull; READ-ONLY</span>
-              <h3>Evidence Data Sources</h3>
+              <span class="panel-eyebrow">LINKED EVIDENCE</span>
+              <h3>Sources</h3>
             </div>
             <span class="counter-badge" id="sourceCountBadge">0 files</span>
           </div>
 
-          <!-- Live Agent Focus Indicator (AG-UI protocol beacon) -->
-          <div id="agentFocusBeacon" class="agent-focus-beacon idle">
-            <span class="beacon-dot"></span>
-            <div class="beacon-content">
-              <span class="beacon-label">AGENT FOCUS BEACON</span>
-              <span class="beacon-status" id="beaconStatusText">Idle &bull; Waiting for agent execution</span>
-            </div>
-          </div>
-
-          <!-- Source Files Tabs -->
+          <!-- Compact source icons; filenames appear on hover -->
           <div id="sourceFilesTabs" class="source-files-tabs"></div>
 
-          <!-- Sheet & Data Inspector -->
+          <!-- Selected source claims, artifacts, and filters -->
           <div id="sourceDataInspector" class="source-data-inspector">
             <div class="empty-inspector">
-              <p>Select a source spreadsheet above to inspect sheets, columns, and data cells.</p>
+              <p>Select a file icon to inspect linked claims, artifacts, and filters.</p>
             </div>
           </div>
 
           <!-- Bottom Action: View Complete Matrix -->
           <div class="matrix-action-bar">
             <button id="btnViewMatrix" class="btn btn-secondary full-width">
-              <span>📋 View Full Lineage Matrix</span>
+              <span>View traceability matrix</span>
             </button>
           </div>
         </aside>
@@ -362,6 +356,6 @@
   </main>
 
   <!-- SCRIPT -->
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

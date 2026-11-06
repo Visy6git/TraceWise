@@ -1,107 +1,101 @@
-# Tracewise · PBRER Document Intelligence & Agent Autonomy POC
+# Tracewise · PBRER Section 16.3 Review & Autonomous Agent Harness
 
-A local-first document intelligence platform for **ICH E2C(R2) Periodic Benefit-Risk Evaluation Reports (PBRER)** and complex regulatory safety reporting.
-
-Tracewise pairs the skeletal outline of a target regulatory report with heterogeneous source evidence (clinical trial exposures, global sales DDD estimations, spontaneous ICSR adverse event line listings, and safety signal logs). Specialized autonomous agents collaborate in an isolated execution sandbox, authoring and executing Python programs to derive verifiable, deterministic data lineage without hallucination.
+Tracewise is an autonomous pharmacovigilance (PV) evidence discovery, calculation-rule engineering, and independent validation platform designed for Periodic Benefit-Risk Evaluation Reports (PBRER).
 
 ---
 
-## 🌟 Key Features
+## Architecture Overview (Phase 2)
 
-1. **Bifurcated Document Ingestion**:
-   - **Target Report (DOCX / PDF)**: Extracts and visualizes the hierarchical section outline (e.g., Section 5.1 Clinical Exposure, Section 5.2 Marketing Patient-Years, Section 7.2 Serious ICSR Tabulations, Section 9.1 Safety Signals).
-   - **Heterogeneous Sources (XLSX, XLS, CSV)**: Profiles multi-tab Excel files, detects headers, types, row counts, and data schemas while maintaining originals as strictly **READ-ONLY**.
+```
+                            ORCHESTRATOR
+   State Machine · Task Routing · Bounded Retries · Concurrency · Run Management
+                                 │
+     ┌───────────────────────────┴───────────────────────────┐
+     ▼                                                       ▼
+EXPLORER AGENT                                         CLAIMS AGENT
+Global dataset profiling, schema discovery,            Extracts atomic claims & figures
+relationships & join cardinality                       from Section 16.3 leaf subsections
+knowledge_graph.json + .md                             claims.json (1 row per figure)
+                                                             │
+                                                             ▼
+                                                    EVIDENCE DISCOVERY
+                                                    Queries complete datasets (SQL)
+                                                    retrieves exact row provenance
+                                                    evidence.json
+                                                             │
+                                                             ▼
+                                                    RULE ENGINEER AGENT
+                                                    Builds declarative MetricRule specs
+                                                    & compiles to deterministic SQL
+                                                    rule.json + result.json
+                                                             │
+                                                             ▼
+                                                      VALIDATOR AGENT
+                                                    Independent check: claim, evidence,
+                                                    population, join, & reconciliation
+                                                    validation.json (max 3 retries)
+                                                             │
+                                            ┌────────────────┴────────────────┐
+                                            ▼                                 ▼
+                                     [PASSED: VALIDATED]           [FAILED: Targeted Retry]
+                                                                   (Evidence / Rule / Claims)
+```
 
-2. **Isolated Agent Autonomy Sandbox**:
-   - Agents operate inside a per-run isolated virtual workspace (`runtime/{run_id}/sandbox/`).
-   - Agents can create, edit, run, and delete Python programs (`pbrer_sec5_exposure_calc.py`, `pbrer_sec7_icsr_safety_metrics.py`, `pbrer_sec9_signal_evaluator.py`).
-   - Guardrails prevent path traversal and forbid modifying or deleting source documents.
-   - Captures stdout, stderr, execution duration (ms), exit codes, and output artifacts.
+### 1. Specialized Autonomous Agents
+- **Orchestrator**: Coordinates execution lifecycle, manages parallel subsection specialists, bounded 3-attempt retry loop, durable run artifacts, and reviewer guidance routing.
+- **Explorer Agent**: One global profiling run across the entire uploaded source dataset. Discovers worksheet schemas, total row counts (without 100-row limits), candidate primary keys, and cross-dataset join relationships (e.g. case-level vs drug-event exports) with join cardinality analysis (1:1, 1:N, N:N). Produces `knowledge_graph.json` and human-readable `knowledge_graph.md`.
+- **Claims Agent**: Decomposes Section 16.3 leaf subsections into individual atomic claims (one claim per reported figure or statement, preserving original text, target locator, and unit).
+- **Evidence Discovery Agent**: Investigates complete source datasets using registered query tools to locate exact supporting records, table schemas, and Excel row coordinates (`__excel_row__`).
+- **Rule Engineer Agent**: Constructs declarative `MetricRule` specifications (source table, entity identifier, aggregation, filters, joins) and compiles them into deterministic queries. Also supports sandboxed Python execution for non-declarative calculations.
+- **Validator Agent**: Independently verifies claim extraction integrity, evidence support, population filters, join cardinality, deterministic re-execution, and numerical reconciliation against the target report. Dispatches structured feedback to the diagnosed stage during retries (capped at 3 attempts, marking unresolved claims as `UNRESOLVED` rather than falsely verified).
 
-3. **Multi-Agent Orchestration & A2A Communication**:
-   - **Lead PV Strategist (Orchestrator)**: Deconstructs target sections into work orders and coordinates specialist agents.
-   - **Clinical & Market Exposure Specialist**: Formulates patient-year conversions ($Units \times Dose / DDD / 365$) and clinical enrollment sums.
-   - **ICSR & Adverse Event Safety Specialist**: Analyzes MedDRA Preferred Terms (Hypotension, Hyperkalaemia, Renal impairment, Acute pancreatitis) and filters serious spontaneous reports.
-   - **Safety Signal Specialist**: Evaluates governance status of closed and ongoing safety signals.
-   - **Lineage Auditor**: Formulates exact deterministic rules, Excel cell coordinates (e.g. `A2:K351`), and compiles the complete regulatory audit dossier.
+### 2. Analytical Data Engine
+- Backed by an isolated SQLite analytical engine (with optional DuckDB acceleration) per run.
+- Indexes all records from uploaded spreadsheets and CSVs without preview caps.
+- Tracks exact source row numbers (`__excel_row__`) for complete auditability.
 
-4. **AG-UI Protocol Interactive Streaming Telemetry**:
-   - Live stream of agent thoughts, A2A messages, sandboxed code execution, file focus beacons, active filtering criteria, and compilation status via Server-Sent Events (`/api/runs/{run_id}/stream`) with polling resilience (`/api/runs/{run_id}/events`).
-   - Dynamic **Agent Focus Beacon** highlights which file, sheet, and columns the agent is actively inspecting or slicing.
+### 3. Bedrock Multi-Turn Converse Tool-Use Loop
+- Uses AWS Bedrock Converse API with Anthropic Claude Sonnet.
+- Implements a complete multi-turn tool interaction loop (`toolUse` -> Python execution -> `toolResult` -> reasoning).
+- Includes deterministic local fallback for offline development and CI test execution.
 
-5. **Human-in-the-Loop Reviewer Guidance**:
-   - Reviewers can add domain notes and constraints to any individual section in the UI (e.g., *"Reconfirm that fatal outcome cases are included"*).
-   - Agents immediately ingest the guidance, write a refinement script, re-execute verification in the sandbox, and update the lineage matrix.
-
-6. **AWS Bedrock Claude 3.5 Sonnet Integration**:
-   - Powered by Anthropic Claude 3.5 Sonnet on AWS Bedrock via `boto3`.
-   - Dual-mode architecture: connects to live AWS Bedrock when credentials are configured; includes an intelligent autonomous verification harness that runs locally with 100% functionality when credentials are in another environment.
-
-7. **One-Click PBRER Demo Bundle**:
-   - Instantly generates a realistic ICH E2C(R2) PBRER report for active substance *"Nexipril Sodium"* along with 4 multi-tab source Excel spreadsheets.
+### 4. Interactive UI & Claim Register
+- **Left Panel**: Focused Section 16.3 subsection hierarchy with live status tags.
+- **Center Panel**: Target report viewer with live agent activity feed and generated run artifacts tray.
+- **Right Panel**: Interactive 3-column Section Claim Register (**Claims | Evidence | Rules & Execution**) displaying status pills, matching records, computed figures, and expandable lineage drawers with reviewer guidance.
 
 ---
 
-## 🚀 Quickstart
+## Quickstart (Windows)
 
-### 1. Activate Environment & Install Dependencies
-```bash
-cd document_intelligence_poc
-# Windows
+```powershell
 .venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-
 pip install -r requirements.txt
+uvicorn app.main:app --reload --reload-dir app --reload-dir static --port 8000
 ```
 
-### 2. Run the Local Server
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
-
-### 3. Test with One-Click Demo
-1. Click **⚡ Load PBRER Sample Bundle** in the top bar.
-2. The UI automatically profiles the documents, populates the Target Report Skeletal on the left, and mounts the 4 source Excel files on the right.
-3. The multi-agent swarm launches inside the sandbox.
-4. Watch the center panel stream live AG-UI thoughts, A2A work orders, generated Python scripts, and sandbox terminal logs.
-5. Click any section in the left panel to review mapped sources, cell coordinates, and submit reviewer notes!
-6. Click **📋 View Full Lineage Matrix** to export the regulatory audit dossier JSON.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Use the **Load PBRER Sample Bundle** button or upload your target report (DOCX/PDF) and source spreadsheets (XLSX/CSV) to launch the review.
 
 ---
 
-## ⚙️ AWS Bedrock Configuration (Claude 3.5 Sonnet)
+## Testing
 
-Set the following environment variables or add them to your `.env` file:
+Run the full pytest suite:
 
-```bash
-# Model ID for Claude 3.5 Sonnet v2 on Bedrock (or your region inference profile ARN)
-BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
-BEDROCK_ENABLED=true
-AWS_REGION=us-east-1
-
-# Standard AWS credential chain (SSO, profile, or environment variables)
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
+```powershell
+.venv\Scripts\python.exe -m pytest -v
 ```
 
-When `BEDROCK_ENABLED=true` and AWS credentials are valid, the adapter in `app/services/bedrock.py` connects via `boto3.client('bedrock-runtime').converse(...)`. If credentials are not present locally, the system runs with the autonomous sandbox verification harness so you can develop, test, and demonstrate seamlessly.
-
----
-
-## 🧪 Automated Tests
-
-Run the test suite:
-```bash
-pytest
-```
-Verifies sandbox lifecycle, security boundaries, multi-agent orchestration, AG-UI event protocol, and deterministic calculation rules.
-
----
-
-## 🔒 Safety & Governance Architecture
-
-- **Protected Sources**: Uploaded source files are strictly READ-ONLY. The execution harness prevents deletion, path traversal, or modification of any file in `input/`.
-- **Per-Run Sandbox**: Agent-generated scripts (`.py`) and data outputs (`.json`) are quarantined inside `runtime/{run_id}/sandbox/`.
-- **Zero Hallucination Policy**: Numeric report metrics are derived exclusively through deterministic calculation scripts with verified Excel row and cell coordinate audit trails.
+The test suite covers:
+- Complete worksheet profiling beyond 100 rows
+- Header discovery with metadata rows
+- Relationship discovery and join cardinality analysis (1:1, 1:N, N:N)
+- Claim atomization (one claim per figure)
+- Evidence retrieval with full dataset coordinates
+- Distinct entity counting (cases vs events)
+- Validator rejection & reconciliation
+- Bounded 3-retry loop ending in `UNRESOLVED`
+- Reviewer note targeted retry
+- Source immutability & read-only protection
+- Multi-turn Bedrock Converse tool loop
+- FastAPI endpoints and AG-UI event replay

@@ -14,11 +14,38 @@ def extract_file(path: Path) -> dict[str, Any]:
     if ext == '.docx':
         from docx import Document
         doc = Document(path)
-        paragraphs = [{'paragraph': i+1, 'text': p.text} for i,p in enumerate(doc.paragraphs) if p.text.strip()]
+        paragraphs = [
+            {'paragraph': i + 1, 'text': p.text, 'style': p.style.name}
+            for i, p in enumerate(doc.paragraphs)
+            if p.text.strip()
+        ]
         tables=[]
         for ti, table in enumerate(doc.tables, 1):
             tables.append({'table': ti, 'rows': [[c.text for c in r.cells] for r in table.rows]})
-        return {'kind':'docx','paragraphs':paragraphs,'tables':tables}
+        blocks = []
+        paragraph_index = 0
+        table_index = 0
+        for child in doc.element.body.iterchildren():
+            if child.tag.endswith('}p'):
+                paragraph_index += 1
+                paragraph = doc.paragraphs[paragraph_index - 1]
+                if paragraph.text.strip():
+                    blocks.append({
+                        'type': 'paragraph',
+                        'paragraph': paragraph_index,
+                        'text': paragraph.text,
+                        'style': paragraph.style.name,
+                    })
+            elif child.tag.endswith('}tbl'):
+                table_index += 1
+                table = doc.tables[table_index - 1]
+                blocks.append({
+                    'type': 'table',
+                    'table': table_index,
+                    'after_paragraph': paragraph_index,
+                    'rows': [[cell.text for cell in row.cells] for row in table.rows],
+                })
+        return {'kind':'docx','paragraphs':paragraphs,'tables':tables,'blocks':blocks}
     if ext == '.pdf':
         from pypdf import PdfReader
         reader=PdfReader(str(path))
@@ -54,7 +81,14 @@ def extract_excel(path: Path) -> dict[str, Any]:
             if any(v.casefold() in {'case number','case id','patient id','event pt','event pt (primary path)'} for v in values):
                 header_idx=i; break
         if header_idx is None:
-            header_idx=next((i for i,row in enumerate(scan) if sum(v is not None and str(v).strip() for v in row)>=2),None)
+            header_idx=next(
+                (
+                    i
+                    for i, row in enumerate(scan)
+                    if sum(bool(v is not None and str(v).strip()) for v in row) >= 2
+                ),
+                None,
+            )
         if header_idx is None:
             sheets.append({'sheet':ws.title,'header_row':None,'columns':[],'row_count':0,'preview':[]}); continue
         columns=[str(v).strip() if v is not None else f'column_{j+1}' for j,v in enumerate(scan[header_idx])]

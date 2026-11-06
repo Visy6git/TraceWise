@@ -53,8 +53,11 @@ def _create_target_pbrer_docx(path: Path):
         "Agency on 15-Jan-2018, followed by US FDA approval on 22-Aug-2018."
     )
 
+    # Section 5
+    doc.add_heading("5. Estimated Exposure and Use Patterns", level=1)
+
     # Section 5.1
-    doc.add_heading("5.1 Cumulative Subject Exposure in Clinical Trials", level=1)
+    doc.add_heading("5.1 Cumulative Subject Exposure in Clinical Trials", level=2)
     doc.add_paragraph(
         "During completed and ongoing clinical trials up to the data lock point of 31-Dec-2024, a cumulative total of "
         "12,450 subjects have been enrolled and exposed to Nexipril. In the current reporting interval (2024), 1,820 new subjects "
@@ -80,7 +83,7 @@ def _create_target_pbrer_docx(path: Path):
         row[3].text = inv
 
     # Section 5.2
-    doc.add_heading("5.2 Cumulative and Interval Patient Exposure from Marketing Experience", level=1)
+    doc.add_heading("5.2 Cumulative and Interval Patient Exposure from Marketing Experience", level=2)
     doc.add_paragraph(
         "Worldwide post-marketing exposure to Nexipril is calculated on the basis of market volume sales and Defined Daily Dose (DDD = 20 mg). "
         "For the 2024 reporting period, total interval patient exposure is estimated at 384,500 patient-years (PY). "
@@ -94,8 +97,11 @@ def _create_target_pbrer_docx(path: Path):
         "During 2024, CCDS Version 5.0 was approved to include warnings regarding acute symptomatic hypotension in volume-depleted patients."
     )
 
+    # Section 7
+    doc.add_heading("7. Summary Tabulations of Safety Data", level=1)
+
     # Section 7.1
-    doc.add_heading("7.1 Summary Tabulations of Serious Adverse Events from Clinical Trials", level=1)
+    doc.add_heading("7.1 Summary Tabulations of Serious Adverse Events from Clinical Trials", level=2)
     doc.add_paragraph(
         "A total of 84 serious adverse events (SAEs) were reported from sponsored clinical trials during the 2024 reporting interval. "
         "The most frequent SAEs by MedDRA System Organ Class were Cardiac disorders (38 events), Renal and urinary disorders (22 events), "
@@ -103,15 +109,18 @@ def _create_target_pbrer_docx(path: Path):
     )
 
     # Section 7.2
-    doc.add_heading("7.2 Tabulations of Serious Adverse Reactions from Post-Marketing Sources", level=1)
+    doc.add_heading("7.2 Tabulations of Serious Adverse Reactions from Post-Marketing Sources", level=2)
     doc.add_paragraph(
         "During the period 01-Jan-2024 to 31-Dec-2024, apex received 342 spontaneous individual case safety reports (ICSRs) "
         "qualifying as serious adverse reactions. The predominant MedDRA Preferred Terms observed included Hypotension (46 cases), "
         "Hyperkalaemia (38 cases), Renal impairment (29 cases), Angioedema (14 cases), and Acute pancreatitis (8 cases)."
     )
 
+    # Section 9
+    doc.add_heading("9. Overview of Signals", level=1)
+
     # Section 9.1
-    doc.add_heading("9.1 Summary of Safety Signals", level=1)
+    doc.add_heading("9.1 Summary of Safety Signals", level=2)
     doc.add_paragraph(
         "Three safety signals were evaluated during the reporting interval: "
         "1. Signal SIG-2024-01: Acute Pancreatitis (Triggered by 8 post-marketing reports; closed with recommendation for RSI update). "
@@ -125,6 +134,23 @@ def _create_target_pbrer_docx(path: Path):
         "The overall benefit-risk profile of Nexipril remains favorable in its approved indications. "
         "No new safety concerns arose that alter the positive balance of benefits over risks."
     )
+
+    doc.add_heading("16. Signal and Risk Evaluation", level=1)
+    doc.add_heading("16.1 Summary of Safety Concerns", level=2)
+    doc.add_paragraph("The established safety concerns remain under routine pharmacovigilance review.")
+    doc.add_heading("16.2 Signal Evaluation", level=2)
+    doc.add_paragraph("Signals are reviewed separately from the risk evaluation in Section 16.3.")
+    doc.add_heading("16.3 Evaluation of Risks and New Information", level=2)
+    doc.add_heading("16.3.1 New information on important identified risks", level=3)
+    doc.add_heading("16.3.1.1 Cardiac failure", level=4)
+    doc.add_paragraph("Serious post-marketing reports for cardiac failure were reviewed for the reporting interval.")
+    doc.add_heading("16.3.1.2 Angioedema", level=4)
+    doc.add_paragraph("The available serious case reports for angioedema were reviewed.")
+    doc.add_heading("16.3.2 New information on important potential risks", level=3)
+    doc.add_heading("16.3.2.1 Acute pancreatitis", level=4)
+    doc.add_paragraph("The available reports for acute pancreatitis were reviewed as a potential risk.")
+    doc.add_heading("16.4 Characterisation of Risks", level=2)
+    doc.add_paragraph("Risk characterisation is presented separately from the Section 16.3 evaluation.")
 
     doc.save(path)
 
@@ -218,6 +244,7 @@ def _create_icsr_adverse_events_xlsx(path: Path):
         ("NEX-ICSR-0006", "20240315", "Initial", "CAN", 58, "F", "Nexipril Sodium", "Heart Failure", "Hepatic enzyme increased", "Hepatobiliary disorders", "Yes", "Medically Significant", "Recovering", "Positive", "Not Rechallenged"),
         ("NEX-ICSR-0007", "20240402", "Initial", "JPN", 69, "M", "Nexipril Sodium", "Heart Failure", "Acute pancreatitis", "Gastrointestinal disorders", "Yes", "Hospitalization", "Recovered", "Positive", "Not Rechallenged"),
         ("NEX-ICSR-0008", "20240420", "Initial", "USA", 80, "F", "Nexipril Sodium", "Heart Failure", "Syncope", "Nervous system disorders", "Yes", "Hospitalization", "Recovered", "Positive", "Not Rechallenged"),
+        ("NEX-ICSR-0009", "20240502", "Initial", "USA", 72, "M", "Nexipril Sodium", "Heart Failure", "Cardiac failure chronic", "Cardiac disorders", "Yes", "Hospitalization", "Recovering", "Positive", "Not Rechallenged"),
     ]
 
     for p in predefined:
@@ -234,12 +261,12 @@ def _create_icsr_adverse_events_xlsx(path: Path):
         ("Hepatobiliary disorders", "Drug-induced liver injury", 5),
         ("Nervous system disorders", "Syncope", 24),
         ("Cardiac disorders", "Atrial fibrillation", 35),
-        ("Cardiac disorders", "Cardiac failure chronic", 40),
+        ("Cardiac disorders", "Cardiac failure chronic", 39),
         ("Respiratory disorders", "Cough", 50),
         ("General disorders", "Asthenia", 40),
     ]
 
-    case_idx = 9
+    case_idx = 10
     countries = ["USA", "DEU", "FRA", "GBR", "CAN", "JPN", "AUS"]
     criteria = ["Hospitalization", "Medically Significant", "Disability", "Life Threatening"]
     outcomes = ["Recovered", "Recovering", "Not Recovered", "Fatal"]
@@ -287,4 +314,3 @@ if __name__ == "__main__":
     out = Path(__file__).resolve().parents[2] / "runtime" / "sample_pbrer_data"
     res = generate_pbrer_sample_bundle(out)
     print(f"Generated {len(res)} files at {out}")
-

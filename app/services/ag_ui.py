@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 import json
 import queue
+import threading
 from typing import Any, Iterator
 
 
@@ -34,10 +35,12 @@ class AGUIEventManager:
     def __init__(self):
         self._events_by_run: dict[str, list[AGUIEvent]] = {}
         self._subscribers: dict[str, list[queue.Queue]] = {}
+        self._lock = threading.Lock()
 
     def get_events(self, run_id: str, since_idx: int = 0) -> list[dict[str, Any]]:
-        events = self._events_by_run.get(run_id, [])
-        return [e.to_dict() for e in events[since_idx:]]
+        with self._lock:
+            events = self._events_by_run.get(run_id, [])
+            return [e.to_dict() for e in events[since_idx:]]
 
     def emit(
         self,
@@ -52,41 +55,36 @@ class AGUIEventManager:
         if details is None:
             details = {}
         now = datetime.now(timezone.utc).isoformat()
-        if run_id not in self._events_by_run:
-            self._events_by_run[run_id] = []
-        idx = len(self._events_by_run[run_id])
-        evt = AGUIEvent(
-            event_id=f"evt_{idx}_{datetime.now(timezone.utc).strftime('%H%M%S%f')[:10]}",
-            run_id=run_id,
-            timestamp=now,
-            agent_id=agent_id,
-            agent_name=agent_name,
-            agent_role=agent_role,
-            event_type=event_type,
-            summary=summary,
-            details=details,
-        )
-        self._events_by_run[run_id].append(evt)
-
-        # Notify subscribers
-        queues = self._subscribers.get(run_id, [])
-        for q in list(queues):
-            try:
-                q.put_nowait(evt)
-            except Exception:
-                pass
+        with self._lock:
+            events = self._events_by_run.setdefault(run_id, [])
+            idx = len(events)
+            evt = AGUIEvent(
+                event_id=f"evt_{idx}_{datetime.now(timezone.utc).strftime('%H%M%S%f')[:10]}",
+                run_id=run_id,
+                timestamp=now,
+                agent_id=agent_id,
+                agent_name=agent_name,
+                agent_role=agent_role,
+                event_type=event_type,
+                summary=summary,
+                details=details,
+            )
+            events.append(evt)
+            queues = list(self._subscribers.get(run_id, []))
+        for subscriber in queues:
+            subscriber.put_nowait(evt)
         return evt
 
     def subscribe_sync(self, run_id: str) -> queue.Queue:
         q: queue.Queue = queue.Queue()
-        if run_id not in self._subscribers:
-            self._subscribers[run_id] = []
-        self._subscribers[run_id].append(q)
+        with self._lock:
+            self._subscribers.setdefault(run_id, []).append(q)
         return q
 
     def unsubscribe_sync(self, run_id: str, q: queue.Queue):
-        if run_id in self._subscribers and q in self._subscribers[run_id]:
-            self._subscribers[run_id].remove(q)
+        with self._lock:
+            if run_id in self._subscribers and q in self._subscribers[run_id]:
+                self._subscribers[run_id].remove(q)
 
 
 # Global singleton
