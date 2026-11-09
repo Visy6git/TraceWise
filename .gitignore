@@ -1,18 +1,41 @@
-.venv/
+# Python
 __pycache__/
+*.py[cod]
 .pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Frontend
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Secrets and local state
 .env
-artifacts/*.json
-*.pyc
-aws_creds.py
+.env.*.local
+*.pem
+*.key
+*.sqlite
+*.db
+
+# PHI, source uploads, runtime workspaces and artifacts must never enter Git
+.tracewise-runtime/
 runtime/
-/runtime
-data/
+runs/
+uploads/
+artifacts/
+source-data/
 *.xlsx
 *.xls
 *.csv
+*.pdf
+*.docx
 *.parquet
 *.duckdb
-*.db
-*.sqlite
-*.sqlite3
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

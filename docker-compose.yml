@@ -1,0 +1,21 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file: .env
+    ports: ["8000:8000"]
+    volumes:
+      - ./.tracewise-runtime:/srv/tracewise/.tracewise-runtime
+    depends_on: [postgres]
+    # No agent worker or code-execution service is started by this starter compose file.
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: tracewise
+      POSTGRES_USER: tracewise
+      POSTGRES_PASSWORD: local-only-change-me
+    ports: ["5432:5432"]
+    volumes: ["tracewise_pg:/var/lib/postgresql/data"]
+volumes:
+  tracewise_pg:

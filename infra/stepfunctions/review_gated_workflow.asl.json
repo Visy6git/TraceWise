@@ -1,0 +1,51 @@
+{
+  "Comment": "TraceWise reviewer-gated pipeline skeleton. Placeholder ARNs and worker inputs must be replaced before deployment.",
+  "StartAt": "ClaimsStage",
+  "States": {
+    "ClaimsStage": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {"LaunchType": "FARGATE", "Cluster": "REPLACE_CLUSTER_ARN", "TaskDefinition": "REPLACE_CLAIMS_TASK_DEFINITION", "NetworkConfiguration": {"AwsvpcConfiguration": {"Subnets": ["REPLACE_PRIVATE_SUBNET"], "SecurityGroups": ["REPLACE_AGENT_SG"], "AssignPublicIp": "DISABLED"}}},
+      "Next": "WaitForClaimsReview",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Failed"}]
+    },
+    "WaitForClaimsReview": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {"FunctionName": "REPLACE_REVIEW_CALLBACK_LAMBDA", "Payload": {"stage": "claims", "runId.$": "$.runId", "taskToken.$": "$$.Task.Token", "manifestHash.$": "$.stage1.manifestHash"}},
+      "Next": "RulesStage",
+      "Catch": [{"ErrorEquals": ["ReviewChangesRequested"], "Next": "ClaimsRework"}]
+    },
+    "ClaimsRework": {"Type": "Task", "Resource": "arn:aws:states:::ecs:runTask.sync", "Parameters": {"LaunchType": "FARGATE", "Cluster": "REPLACE_CLUSTER_ARN", "TaskDefinition": "REPLACE_CLAIMS_TASK_DEFINITION"}, "Next": "WaitForClaimsReview"},
+    "RulesStage": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {"LaunchType": "FARGATE", "Cluster": "REPLACE_CLUSTER_ARN", "TaskDefinition": "REPLACE_RULES_TASK_DEFINITION"},
+      "Next": "WaitForRulesReview",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Failed"}]
+    },
+    "WaitForRulesReview": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {"FunctionName": "REPLACE_REVIEW_CALLBACK_LAMBDA", "Payload": {"stage": "rules", "runId.$": "$.runId", "taskToken.$": "$$.Task.Token", "manifestHash.$": "$.stage2.manifestHash"}},
+      "Next": "EvaluatorStage",
+      "Catch": [{"ErrorEquals": ["ReviewChangesRequested"], "Next": "RulesRework"}]
+    },
+    "RulesRework": {"Type": "Task", "Resource": "arn:aws:states:::ecs:runTask.sync", "Parameters": {"LaunchType": "FARGATE", "Cluster": "REPLACE_CLUSTER_ARN", "TaskDefinition": "REPLACE_RULES_TASK_DEFINITION"}, "Next": "WaitForRulesReview"},
+    "EvaluatorStage": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {"LaunchType": "FARGATE", "Cluster": "REPLACE_CLUSTER_ARN", "TaskDefinition": "REPLACE_EVALUATOR_TASK_DEFINITION"},
+      "Next": "WaitForFinalReview",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Failed"}]
+    },
+    "WaitForFinalReview": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {"FunctionName": "REPLACE_REVIEW_CALLBACK_LAMBDA", "Payload": {"stage": "evaluation", "runId.$": "$.runId", "taskToken.$": "$$.Task.Token", "manifestHash.$": "$.stage3.manifestHash"}},
+      "Next": "Complete"
+    },
+    "Complete": {"Type": "Succeed"},
+    "Failed": {"Type": "Fail", "Cause": "A stage task failed. Preserve artifacts and audit state for diagnosis."}
+  }
+}

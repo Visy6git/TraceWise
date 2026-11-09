@@ -1,19 +1,24 @@
-from __future__ import annotations
-import time
-from typing import Any
+from enum import StrEnum
 from pydantic import BaseModel, Field
+from typing import Any
 
 
-class AgentMessage(BaseModel):
+class StageName(StrEnum):
+    claims = "claims"
+    rules = "rules"
+    evaluation = "evaluation"
+
+
+class MessageEnvelope(BaseModel):
+    """Typed message envelope routed by the Run Control Plane, never peer-to-peer."""
     message_id: str
-    sender: str
-    recipient: str
-    intent: str
-    claim_id: str | None = None
-    section_id: str | None = None
+    run_id: str
+    stage: StageName
+    sender_agent_id: str
+    recipient_agent_id: str
+    message_type: str
+    artifact_refs: list[str] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
-    timestamp: float = Field(default_factory=time.time)
-
-    def to_dict(self) -> dict[str, Any]:
-        return self.model_dump()
-
+    correlation_id: str
+    created_at: str
+    expires_at: str | None = None

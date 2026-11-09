@@ -1,0 +1,11 @@
+.git
+.env
+.venv
+node_modules
+dist
+.tracewise-runtime
+runs
+uploads
+artifacts
+*.sqlite
+*.db
