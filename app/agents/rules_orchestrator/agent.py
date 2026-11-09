@@ -8,11 +8,16 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.base import AgentRuntimeConfig, build_strands_agent
+from app.agents.claims_orchestrator.agent import build_source_map
+from app.agents.claims_orchestrator.section_scope import match_sources_for_unit
 from app.agents.rules_orchestrator.retry_policy import RetryBudget
 from app.agents.rules_orchestrator.subagent_dispatch import dispatch_rule_subagent
+from app.config import MOCK_RUNS_ENABLED
 from app.control_plane.run_state import RunState
+from app.services.bedrock import invoke_bedrock, parse_bedrock_json
 from app.services.database import default_claim_repo, default_run_repo
 from app.services.event_stream import default_broker
+from app.services.logging_config import get_run_logger
 from app.services.sandbox_client import default_sandbox
 from app.services.storage import default_storage
 from app.tools.artifact_tools import publish_artifact
@@ -284,12 +289,104 @@ print(f"Computed generic claim value: {output['computed_value']}")
 '''
 
 
+# Compact sandbox contract injected into the Rules prompt (full version lives in
+# app/agents/rules_orchestrator/analysis_template.py).
+_SANDBOX_CONTRACT = """SANDBOX CONTRACT — the script is run as `python analysis.py` with cwd = the claim
+workspace. Env vars: SOURCE_INPUT_DIR (read-only source workbooks), CLAIM_WORKSPACE_DIR
+(write here only), CLAIM_ID, RUN_ID. Pre-installed: pandas, numpy, openpyxl, duckdb.
+No network/credentials/subprocess; read only from SOURCE_INPUT_DIR; write only in the
+workspace. The script MUST write result.json with at least: claim_id, computed_value,
+unit, source_file, status. CSMR sheets have a banner/preamble ABOVE the real header, so
+read with the real header: df = pd.read_excel(path, sheet_name=SHEET, skiprows=HEADER_ROW_INDEX).
+NEVER copy the reported value into computed_value — compute it from the rows."""
+
+_ANALYSIS_SKELETON = """import os, json
+import pandas as pd
+CLAIM_ID = os.environ.get("CLAIM_ID", "CLM-XXXX")
+SRC_DIR = os.environ.get("SOURCE_INPUT_DIR", ".")
+SOURCE_FILE = "<file from verification_plan>"; SHEET = "<sheet>"; HEADER_ROW_INDEX = <int>
+df = pd.read_excel(os.path.join(SRC_DIR, SOURCE_FILE), sheet_name=SHEET, skiprows=HEADER_ROW_INDEX, dtype=str)
+df.columns = [str(c).strip() for c in df.columns]
+# apply EXACT filters from verification_plan, then aggregate (e.g. distinct count of dedup_key)
+computed = int(df["Case Number"].dropna().str.strip().nunique())
+json.dump({"claim_id": CLAIM_ID, "computed_value": computed, "unit": "cases",
+           "source_file": SOURCE_FILE, "status": "computed"}, open("result.json", "w"), indent=2)
+print("computed_value", computed)"""
+
+
+def _matched_source_map(claim: dict[str, Any], source_knowledge: dict[str, Any]) -> list[dict[str, Any]]:
+    """The data-sheet map (columns + exact filter values + header offset) for this claim."""
+    all_files = [s["original_filename"] for s in source_knowledge.get("sources", [])]
+    vp = (claim.get("evidence_hint") or {}).get("verification_plan") or {}
+    matched = match_sources_for_unit(
+        {"title": claim.get("normalized_statement") or claim.get("raw_statement") or "", "keywords": None},
+        source_knowledge.get("sources", []),
+    )
+    if vp.get("source_file") and vp["source_file"] in all_files and vp["source_file"] not in matched:
+        matched.insert(0, vp["source_file"])
+    return build_source_map(source_knowledge, matched or all_files)
+
+
+def _generate_live_rule(
+    claim: dict[str, Any],
+    source_files: list[Path],
+    source_knowledge: dict[str, Any],
+) -> dict[str, str]:
+    """Ask Bedrock for a claim-specific plan and data-derived calculation."""
+    source_map = _matched_source_map(claim, source_knowledge)
+    verification_plan = (claim.get("evidence_hint") or {}).get("verification_plan") or {}
+
+    prompt = f"""Write a reproducible Python analysis that INDEPENDENTLY computes this
+reviewer-approved numeric claim from the immutable source workbooks, then compares it to
+the reported value. Follow the claim's VERIFICATION_PLAN and the SOURCE_DATA_MAP exactly —
+use only the real sheet names, header_row_index, column names and categorical values shown
+there; find the correct rows and columns rather than guessing. Do NOT tune filters to hit
+the reported value and do NOT copy the reported value into computed_value. If a needed
+column/value is not in the map, write status "unresolved_semantics" and list what is missing.
+
+{_SANDBOX_CONTRACT}
+
+Return ONLY JSON: {{"plan_md": string, "rule_spec": object, "analysis_py": string}}.
+analysis_py is a complete script following this skeleton (fill in the real file/sheet/header,
+filters and aggregation from the plan):
+---
+{_ANALYSIS_SKELETON}
+---
+
+CLAIM:
+{json.dumps({k: claim.get(k) for k in ('claim_id','section_number','claim_type','entity_unit','reported_value','unit','normalized_statement')}, ensure_ascii=False)}
+
+VERIFICATION_PLAN (from the Claims agent — the recipe to reproduce this claim):
+{json.dumps(verification_plan, ensure_ascii=False)}
+
+SOURCE_DATA_MAP (real sheets, header offsets, columns, exact categorical filter values):
+{json.dumps(source_map, ensure_ascii=False)}
+"""
+    response = parse_bedrock_json(invoke_bedrock(prompt, max_tokens=8192))
+    if not isinstance(response, dict):
+        raise ValueError(f"Bedrock did not return a rule object for {claim['claim_id']}")
+    if not isinstance(response.get("rule_spec"), dict):
+        raise ValueError(f"Bedrock returned an invalid rule_spec for {claim['claim_id']}")
+    if not all(
+        isinstance(response.get(key), str) and response[key].strip()
+        for key in ("plan_md", "analysis_py")
+    ):
+        raise ValueError(f"Bedrock rule response for {claim['claim_id']} is incomplete")
+    return {
+        "plan_md": response["plan_md"],
+        "rule_spec": json.dumps(response["rule_spec"], indent=2),
+        "analysis_py": response["analysis_py"],
+    }
+
+
 def run_rules_stage(run_id: str, approved_stage_1_manifest: str | None = None) -> dict[str, Any]:
     """Execute Stage 2: claim-by-claim code generation, isolated execution, tests, and publishing."""
     run = default_run_repo.get_run(run_id)
     if not run:
         raise ValueError(f"Run {run_id} not found")
 
+    logger = get_run_logger(run_id, "rules")
+    logger.info("=== Stage 2 (Rules) START | run=%s | mock=%s ===", run_id, MOCK_RUNS_ENABLED)
     default_broker.emit_stage_update(run_id, "rules", "running", progress=5)
     default_broker.emit_activity(
         run_id=run_id,
@@ -314,12 +411,29 @@ def run_rules_stage(run_id: str, approved_stage_1_manifest: str | None = None) -
     if not claims:
         raise ValueError(f"No approved claims found for run {run_id}")
 
-    # Locate source directory
-    source_dir = Path("runtime/sample_pbrer_data").resolve()
-    if not source_dir.exists():
-        source_dir = default_storage.root_dir / "default" / run_id / "input" / "sources"
+    if MOCK_RUNS_ENABLED:
+        source_dir = Path("runtime/sample_pbrer_data").resolve()
+        source_files = list(source_dir.glob("*.xlsx")) if source_dir.exists() else []
+        if not source_files:
+            source_dir = default_storage.root_dir / "default" / run_id / "input" / "sources"
+            source_files = list(source_dir.glob("*.xlsx")) + list(source_dir.glob("*.csv"))
+    else:
+        source_paths = [Path(path).resolve() for path in run.get("source_object_ids", [])]
+        if any(
+            not path.is_file() or path.suffix.lower() not in {".xlsx", ".csv"}
+            for path in source_paths
+        ):
+            raise FileNotFoundError(
+                f"One or more attached XLSX/CSV files are missing for run {run_id}"
+            )
+        source_files = source_paths
+        if not source_files:
+            raise FileNotFoundError(f"No real XLSX/CSV source files found for run {run_id}")
+        source_dir = source_files[0].parent
 
-    source_files = list(source_dir.glob("*.xlsx")) if source_dir.exists() else []
+    source_knowledge = json.loads(
+        default_storage.read_text(f"default/{run_id}/stage_1_claims/source_knowledge.json")
+    )
 
     total_claims = len(claims)
     processed_count = 0
@@ -332,6 +446,13 @@ def run_rules_stage(run_id: str, approved_stage_1_manifest: str | None = None) -
         progress = int((processed_count / total_claims) * 90)
         default_broker.emit_stage_update(run_id, "rules", "running", progress=progress)
 
+        sub_id = f"rules-{claim_id}"
+        sub_name = f"{claim_id} · {claim.get('section_number')} Rule Engineer"
+        default_broker.emit_subagent_start(
+            run_id, "rules", sub_id, sub_name, "rule-engineering",
+            detail=f"Investigating Section {claim.get('section_number')}",
+        )
+        logger.info("Subagent %s START | section=%s", sub_id, claim.get("section_number"))
         default_broker.emit_activity(
             run_id=run_id,
             stage="rules",
@@ -368,24 +489,42 @@ def run_rules_stage(run_id: str, approved_stage_1_manifest: str | None = None) -
 4. Run in isolated fail-closed sandbox.
 5. Verify execution output and write evidence bundle.
 """
+        generated_rule = None
+        if not MOCK_RUNS_ENABLED:
+            generated_rule = _generate_live_rule(claim, source_files, source_knowledge)
+            plan_content = generated_rule["plan_md"]
         (ws_dir / "plan.md").write_text(plan_content, encoding="utf-8")
 
         # 3. Generate rule_spec.json
-        rule_spec = {
-            "schema_version": "1.0",
-            "claim_id": claim_id,
-            "entity_definition": claim.get("entity_unit", ""),
-            "datasets": [s.name for s in source_files],
-            "joins": [],
-            "filters": [],
-            "deduplication_key": ["Case_Number"] if "case" in (claim.get("entity_unit") or "").lower() else [],
-            "aggregation": {"type": "sum_or_count", "target_column": "value"},
-            "assumptions": ["Sources reflect verified data lock point 31-Dec-2024"],
-        }
-        (ws_dir / "rule_spec.json").write_text(json.dumps(rule_spec, indent=2), encoding="utf-8")
+        if generated_rule:
+            (ws_dir / "rule_spec.json").write_text(generated_rule["rule_spec"], encoding="utf-8")
+        else:
+            rule_spec = {
+                "schema_version": "1.0",
+                "claim_id": claim_id,
+                "entity_definition": claim.get("entity_unit", ""),
+                "datasets": [s.name for s in source_files],
+                "joins": [],
+                "filters": [],
+                "deduplication_key": (
+                    ["Case_Number"]
+                    if "case" in (claim.get("entity_unit") or "").lower()
+                    else []
+                ),
+                "aggregation": {"type": "sum_or_count", "target_column": "value"},
+                "assumptions": ["Sources reflect verified data lock point 31-Dec-2024"],
+            }
+            (ws_dir / "rule_spec.json").write_text(
+                json.dumps(rule_spec, indent=2),
+                encoding="utf-8",
+            )
 
         # 4. Generate analysis.py
-        script_code = _generate_claim_script(claim, source_files)
+        script_code = (
+            generated_rule["analysis_py"]
+            if generated_rule
+            else _generate_claim_script(claim, source_files)
+        )
         (ws_dir / "analysis.py").write_text(script_code, encoding="utf-8")
 
         # 5. Generate tests/test_analysis.py
@@ -405,10 +544,14 @@ def test_result_generated():
         # 6. Generate requirements.lock
         (ws_dir / "requirements.lock").write_text("openpyxl>=3.1\npandas>=2.2\nduckdb>=1.1\n", encoding="utf-8")
 
-        # 7. Execute in isolated sandbox with retry budget
-        budget = RetryBudget(max_repair_cycles=2)
+        # 7. Execute in isolated sandbox with retry budget (bounded self-correction:
+        #    the agent re-reads the error and retries locating the right rows/columns).
+        budget = RetryBudget(max_repair_cycles=int(os.environ.get("MAX_REPAIR_CYCLES", "3")))
         budget.consume_tool_call(f"run_python({claim_id})")
 
+        result_path = ws_dir / "result.json"
+        if result_path.exists():
+            result_path.unlink()
         exec_res = default_sandbox.execute(
             run_id=run_id,
             claim_id=claim_id,
@@ -418,7 +561,7 @@ def test_result_generated():
         )
 
         # If execution failed, attempt repair
-        if exec_res["exit_code"] != 0 and budget.repairs < budget.max_repair_cycles:
+        while exec_res["exit_code"] != 0 and budget.repairs < budget.max_repair_cycles:
             budget.consume_repair()
             default_broker.emit_activity(
                 run_id=run_id,
@@ -428,7 +571,44 @@ def test_result_generated():
                 kind="agent",
                 status="warning",
             )
-            # Re-execute
+            if not MOCK_RUNS_ENABLED:
+                repair_prompt = f"""Repair the analysis script using the execution error below.
+Keep the original claim semantics. Do NOT copy the reported value into computed_value.
+Use the SOURCE_DATA_MAP to fix the sheet name, header_row_index (skiprows), column names
+or filter values — a KeyError/empty result usually means the header offset or a column
+name is wrong. Return JSON only: {{"analysis_py": string}}.
+
+{_SANDBOX_CONTRACT}
+
+CLAIM:
+{json.dumps({k: claim.get(k) for k in ('claim_id','section_number','claim_type','entity_unit','reported_value','unit','normalized_statement')}, ensure_ascii=False)}
+
+VERIFICATION_PLAN:
+{json.dumps((claim.get("evidence_hint") or {}).get("verification_plan") or {}, ensure_ascii=False)}
+
+SOURCE_DATA_MAP:
+{json.dumps(_matched_source_map(claim, source_knowledge), ensure_ascii=False)}
+
+PREVIOUS_SCRIPT:
+{script_code}
+
+STDOUT:
+{exec_res.get("stdout", "")[:2000]}
+
+STDERR:
+{exec_res.get("stderr", "")[:2000]}
+"""
+                repair = parse_bedrock_json(invoke_bedrock(repair_prompt, max_tokens=8192))
+                if (
+                    not isinstance(repair, dict)
+                    or not isinstance(repair.get("analysis_py"), str)
+                    or not repair["analysis_py"].strip()
+                ):
+                    raise ValueError(f"Bedrock returned an invalid repair for {claim_id}")
+                script_code = repair["analysis_py"]
+                (ws_dir / "analysis.py").write_text(script_code, encoding="utf-8")
+            if result_path.exists():
+                result_path.unlink()
             exec_res = default_sandbox.execute(
                 run_id=run_id,
                 claim_id=claim_id,
@@ -443,11 +623,15 @@ def test_result_generated():
         (ws_dir / "stderr.log").write_text(exec_res.get("stderr", ""), encoding="utf-8")
 
         # Result data
-        result_data = exec_res.get("result_data") or {
-            "claim_id": claim_id,
-            "computed_value": claim.get("reported_value"),
-            "status": "computed",
-        }
+        result_data = exec_res.get("result_data")
+        if result_data is None and MOCK_RUNS_ENABLED:
+            result_data = {
+                "claim_id": claim_id,
+                "computed_value": claim.get("reported_value"),
+                "status": "computed",
+            }
+        if not isinstance(result_data, dict) or "computed_value" not in result_data:
+            raise RuntimeError(f"Calculation did not produce computed_value for {claim_id}")
         (ws_dir / "result.json").write_text(json.dumps(result_data, indent=2), encoding="utf-8")
 
         # 8. Generate evidence_bundle.json & provenance.json
@@ -517,6 +701,12 @@ def test_result_generated():
             actor_id="rules-orchestrator",
         )
         default_broker.emit_claim_update(run_id, claim_id, claim["section_id"], "artifact_ready")
+        default_broker.emit_subagent_finish(
+            run_id, "rules", sub_id, sub_name,
+            detail=f"computed={result_data.get('computed_value')} · exit={exec_res.get('exit_code')}",
+        )
+        logger.info("Subagent %s DONE | computed=%s exit=%s",
+                    sub_id, result_data.get("computed_value"), exec_res.get("exit_code"))
 
     stage_2_manifest_hash = hasher.hexdigest()
     default_run_repo.set_manifest_hash(run_id, "rules", stage_2_manifest_hash)

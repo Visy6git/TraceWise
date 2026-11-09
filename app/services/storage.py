@@ -67,6 +67,24 @@ class StorageService:
             "logical_path": logical_path,
         }
 
+    def put_derived(self, tenant_id: str, run_id: str, logical_path: str, body: bytes | str) -> dict[str, str | int]:
+        """Write a *derived* artifact, overwriting any prior version.
+
+        Immutability applies to original inputs; extraction/scoping outputs are
+        regenerated on every stage run, so they must be overwritable.
+        """
+        target_path = self._resolve_physical_path(tenant_id, run_id, logical_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        content = body.encode("utf-8") if isinstance(body, str) else body
+        target_path.write_bytes(content)
+        return {
+            "object_id": f"{tenant_id}/{run_id}/{logical_path.lstrip('/')}",
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content),
+            "physical_path": str(target_path),
+            "logical_path": logical_path,
+        }
+
     def open_readonly(self, object_id: str) -> bytes:
         parts = object_id.replace("\\", "/").strip("/").split("/", 2)
         if len(parts) < 3:

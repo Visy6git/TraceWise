@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from typing import Any, AsyncIterator
 
@@ -27,16 +28,27 @@ class EventBroker:
     def __init__(self):
         self._history: dict[str, list[dict[str, Any]]] = {}
         self._listeners: dict[str, list[asyncio.Queue]] = {}
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def publish(self, run_id: str, event: dict[str, Any]) -> None:
-        if run_id not in self._history:
-            self._history[run_id] = []
-        event_idx = len(self._history[run_id]) + 1
-        event["_sequence_id"] = str(event_idx)
-        self._history[run_id].append(event)
+        with self._lock:
+            history = self._history.setdefault(run_id, [])
+            event["_sequence_id"] = str(len(history) + 1)
+            history.append(event)
+            listeners = list(self._listeners.get(run_id, []))
 
-        # Notify active listeners
-        for q in self._listeners.get(run_id, []):
+        # Stage execution runs in a worker thread, while SSE generators live on
+        # the event loop. asyncio.Queue is not thread-safe, so bridge the put
+        # onto the loop with call_soon_threadsafe to guarantee live delivery.
+        loop = self._loop
+        for q in listeners:
+            if loop is not None and loop.is_running():
+                try:
+                    loop.call_soon_threadsafe(q.put_nowait, event)
+                    continue
+                except RuntimeError:
+                    pass
             try:
                 q.put_nowait(event)
             except Exception:
@@ -120,6 +132,53 @@ class EventBroker:
         )
         self.publish(run_id, evt)
 
+    def emit_subagent_start(self, run_id: str, stage: str, subagent_id: str, name: str, role: str, detail: str = "") -> None:
+        self.publish(run_id, agui_event(
+            "SUBAGENT_STARTED",
+            threadId=run_id,
+            runId=run_id,
+            subagentId=subagent_id,
+            subagentRunId=subagent_id,
+            name=name,
+            role=role,
+            stage=stage,
+            detail=detail,
+        ))
+
+    def emit_subagent_finish(self, run_id: str, stage: str, subagent_id: str, name: str, claims: int = 0, detail: str = "") -> None:
+        self.publish(run_id, agui_event(
+            "SUBAGENT_FINISHED",
+            threadId=run_id,
+            runId=run_id,
+            subagentId=subagent_id,
+            subagentRunId=subagent_id,
+            name=name,
+            stage=stage,
+            claims=claims,
+            detail=detail,
+        ))
+
+    def emit_subagent_error(self, run_id: str, stage: str, subagent_id: str, name: str, message: str) -> None:
+        self.publish(run_id, agui_event(
+            "SUBAGENT_ERROR",
+            threadId=run_id,
+            runId=run_id,
+            subagentId=subagent_id,
+            subagentRunId=subagent_id,
+            name=name,
+            stage=stage,
+            message=message,
+        ))
+
+    def emit_run_error(self, run_id: str, stage: str, message: str) -> None:
+        self.publish(run_id, agui_event(
+            "RUN_ERROR",
+            threadId=run_id,
+            runId=run_id,
+            stage=stage,
+            message=message,
+        ))
+
     def emit_tool_call(self, run_id: str, tool_name: str, args_summary: dict[str, Any], result_summary: dict[str, Any] | None = None) -> None:
         call_id = f"tool-{int(time.time() * 1000)}"
         self.publish(run_id, agui_event("TOOL_CALL_START", threadId=run_id, runId=run_id, toolCallId=call_id, toolName=tool_name))
@@ -129,14 +188,19 @@ class EventBroker:
         self.publish(run_id, agui_event("TOOL_CALL_END", threadId=run_id, runId=run_id, toolCallId=call_id))
 
     async def subscribe(self, run_id: str, cursor: str | None = None) -> AsyncIterator[str]:
+        # Capture the running loop so off-thread publishers can bridge onto it.
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+
         q: asyncio.Queue = asyncio.Queue()
-        if run_id not in self._listeners:
-            self._listeners[run_id] = []
-        self._listeners[run_id].append(q)
+        with self._lock:
+            self._listeners.setdefault(run_id, []).append(q)
+            history = list(self._history.get(run_id, []))
 
         try:
             # Replay historical events
-            history = self._history.get(run_id, [])
             start_idx = 0
             if cursor and cursor.isdigit():
                 start_idx = int(cursor)
@@ -155,8 +219,9 @@ class EventBroker:
                     # Keep-alive comment
                     yield ": keep-alive\n\n"
         finally:
-            if run_id in self._listeners and q in self._listeners[run_id]:
-                self._listeners[run_id].remove(q)
+            with self._lock:
+                if run_id in self._listeners and q in self._listeners[run_id]:
+                    self._listeners[run_id].remove(q)
 
 
 default_broker = EventBroker()

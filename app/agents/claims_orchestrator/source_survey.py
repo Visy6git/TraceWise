@@ -1,22 +1,105 @@
-"""All-source intelligence and knowledge artifact interfaces."""
+"""All-source intelligence and knowledge artifact generation.
+
+Builds a *source map* the downstream agents can actually act on: for every data
+sheet it records the real header row, the real column names, each column's type
+and — for low-cardinality columns — the full set of distinct values (so a filter
+like ``Seriousness == 'Yes'`` can be specified exactly). The stated totals in the
+sheet preamble (e.g. "Count of Cases: 164") are captured too.
+
+Profiling reads a bounded sample via openpyxl using the detected header offset,
+so the multi-MB "all CSMR" exports do not stall the stage.
+"""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any
 
-from app.services.analytics import default_analytics
+import openpyxl
+
+from app.services.event_stream import default_broker
 from app.services.extraction import extract_source_file
 from app.services.storage import default_storage
+
+_PROFILE_SAMPLE_ROWS = 3000
+_MAX_DISTINCT = 25
+_SNIPPET = 80
+
+
+def _guess_type(samples: list[Any]) -> str:
+    values = [v for v in samples if v not in (None, "")]
+    if not values:
+        return "unknown"
+    numeric = 0
+    for v in values:
+        try:
+            float(str(v).replace(",", ""))
+            numeric += 1
+        except (TypeError, ValueError):
+            break
+    return "numeric" if numeric == len(values) else "string"
+
+
+def _is_keyish(name: str) -> bool:
+    n = name.lower()
+    return n == "id" or n.endswith("_id") or "case number" in n or "case_number" in n or n.endswith("number")
+
+
+def _profile_columns(path: Path, dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-column profile: type, fill, distinct values (for categorical columns)."""
+    cols = dataset["columns"]
+    header_idx = dataset.get("header_row_index", 0)
+    value_sets: list[set] = [set() for _ in cols]
+    overflow = [False] * len(cols)
+    non_null = [0] * len(cols)
+    sampled = 0
+
+    wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    try:
+        ws = wb[dataset["sheet_or_table"]]
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i <= header_idx:
+                continue
+            if sampled >= _PROFILE_SAMPLE_ROWS:
+                break
+            if not any(c is not None and str(c).strip() for c in row):
+                continue
+            sampled += 1
+            for j in range(len(cols)):
+                v = row[j] if j < len(row) else None
+                if v is None or not str(v).strip():
+                    continue
+                non_null[j] += 1
+                if not overflow[j]:
+                    value_sets[j].add(str(v).strip()[:_SNIPPET])
+                    if len(value_sets[j]) > _MAX_DISTINCT:
+                        overflow[j] = True
+    finally:
+        wb.close()
+
+    profiles: list[dict[str, Any]] = []
+    for j, name in enumerate(cols):
+        vals = sorted(value_sets[j])
+        categorical = not overflow[j] and 0 < len(vals) <= _MAX_DISTINCT
+        profiles.append({
+            "name": str(name),
+            "type": _guess_type(vals[:12]),
+            "non_null": non_null[j],
+            "sampled_rows": sampled,
+            "distinct_estimate": f">{_MAX_DISTINCT}" if overflow[j] else len(vals),
+            "is_categorical": categorical,
+            "distinct_values": vals if categorical else None,
+            "example_values": vals[:6],
+        })
+    return profiles
 
 
 def survey_all_sources(run_id: str, source_files: list[str | Path]) -> dict[str, Any]:
     """Profile all uploaded source workbooks and generate canonical knowledge artifacts."""
-    source_objects = []
-    datasets = []
-    columns = []
-    relationships = []
-    dataframes: dict[str, Any] = {}
+    source_objects: list[dict[str, Any]] = []
+    datasets: list[dict[str, Any]] = []
+    columns: list[dict[str, Any]] = []
+    relationships: list[dict[str, Any]] = []
 
     for src_path in source_files:
         p = Path(src_path).resolve()
@@ -33,98 +116,96 @@ def survey_all_sources(run_id: str, source_files: list[str | Path]) -> dict[str,
             "limitations": [],
         })
 
-        # Profile each sheet/dataset
-        for ds in extracted["datasets"]:
-            sheet_name = ds["sheet_or_table"]
+        data_sheets = [d for d in extracted["datasets"] if d.get("is_data")]
+        default_broker.emit_activity(
+            run_id=run_id, stage="claims", title="Profiling source",
+            detail=f"{extracted['filename']} · {len(data_sheets)} data sheet(s)",
+            kind="tool", source=extracted["filename"],
+        )
+
+        for ds in data_sheets:
+            dataset_id = ds["dataset_id"]
+            col_names = [str(c) for c in ds["columns"]]
             try:
-                df = default_analytics.load_dataset(p, sheet_name=sheet_name)
-                dataset_id = ds["dataset_id"]
-                dataframes[dataset_id] = df
+                col_profiles = _profile_columns(p, ds)
+            except Exception as exc:  # profiling must not sink the stage
+                col_profiles = [{"name": c, "type": "unknown"} for c in col_names]
+                default_broker.emit_activity(
+                    run_id=run_id, stage="claims", title="Profiling warning",
+                    detail=f"{extracted['filename']} / {ds['sheet_or_table']}: {exc}",
+                    kind="warning", status="warning",
+                )
+            candidate_keys = [c for c in col_names if _is_keyish(c)]
 
-                profile = default_analytics.profile_dataframe(df, dataset_id)
-                datasets.append({
+            for prof in col_profiles:
+                columns.append({
                     "dataset_id": dataset_id,
-                    "source_id": extracted["source_id"],
-                    "sheet_or_table": sheet_name,
-                    "visible": True,
-                    "row_count": profile["row_count"],
-                    "column_count": profile["column_count"],
-                    "data_columns": [c["original_name"] for c in profile["columns"]],
-                    "candidate_key_columns": profile["candidate_keys"],
-                    "warnings": [],
-                })
-                columns.extend(profile["columns"])
-            except Exception as e:
-                datasets.append({
-                    "dataset_id": ds["dataset_id"],
-                    "source_id": extracted["source_id"],
-                    "sheet_or_table": sheet_name,
-                    "visible": True,
-                    "row_count": ds["row_count"],
-                    "column_count": len(ds["columns"]),
-                    "data_columns": ds["columns"],
-                    "candidate_key_columns": [],
-                    "warnings": [f"Profiling warning: {e}"],
+                    "original_name": prof["name"],
+                    "normalized_name": prof["name"].lower().replace(" ", "_"),
+                    "inferred_type": prof["type"],
+                    "is_categorical": prof.get("is_categorical", False),
+                    "distinct_values": prof.get("distinct_values"),
+                    "sample_values": prof.get("example_values", []),
                 })
 
-    # Test relationships between datasets that share candidate keys or common ID columns
-    ds_ids = list(dataframes.keys())
-    for i in range(len(ds_ids)):
-        for j in range(i + 1, len(ds_ids)):
-            id_a = ds_ids[i]
-            id_b = ds_ids[j]
-            df_a = dataframes[id_a]
-            df_b = dataframes[id_b]
+            datasets.append({
+                "dataset_id": dataset_id,
+                "source_id": extracted["source_id"],
+                "sheet_or_table": ds["sheet_or_table"],
+                "header_row_index": ds.get("header_row_index", 0),
+                "visible": True,
+                "row_count": ds["row_count"],
+                "column_count": len(col_names),
+                "data_columns": col_names,
+                "candidate_key_columns": candidate_keys,
+                "preamble": ds.get("preamble", []),
+                "column_profiles": col_profiles,
+                "warnings": [],
+            })
 
-            common_cols = [c for c in df_a.columns if c in df_b.columns and ("id" in c.lower() or "number" in c.lower() or "study" in c.lower())]
-            for col in common_cols:
-                try:
-                    rel = default_analytics.test_join_cardinality(df_a, df_b, [col], [col])
-                    relationships.append({
-                        "left_dataset_id": id_a,
-                        "right_dataset_id": id_b,
-                        "join_keys": [col],
-                        "tested_cardinality": rel["tested_cardinality"],
-                        "overlap_count": rel["matched_rows"],
-                        "unmatched_left_count": rel["unmatched_left"],
-                        "unmatched_right_count": rel["unmatched_right"],
-                        "duplicate_expansion": rel["duplicate_expansion"],
-                        "evidence_refs": [id_a, id_b],
-                    })
-                except Exception:
-                    pass
+    # Heuristic relationships: data sheets sharing a key-ish column likely join on it.
+    for i in range(len(datasets)):
+        for j in range(i + 1, len(datasets)):
+            shared = [
+                c for c in datasets[i]["candidate_key_columns"]
+                if c in datasets[j]["candidate_key_columns"]
+            ]
+            for col in shared[:1]:
+                relationships.append({
+                    "left_dataset_id": datasets[i]["dataset_id"],
+                    "right_dataset_id": datasets[j]["dataset_id"],
+                    "join_keys": [col],
+                    "tested_cardinality": "inferred_shared_key",
+                    "evidence_refs": [datasets[i]["dataset_id"], datasets[j]["dataset_id"]],
+                })
 
-    # Build human-readable Markdown summary
+    # Human-readable Markdown summary
     md_lines = [
         f"# Source Intelligence Survey for Run `{run_id}`",
         "",
         "## Uploaded Sources Overview",
         "",
-        "| Source | Format | Size | Datasets / Sheets |",
+        "| Source | Format | Size | Data sheets |",
         "|---|---|---|---|",
     ]
     for so in source_objects:
         ds_for_so = [d["sheet_or_table"] for d in datasets if d["source_id"] == so["source_id"]]
         md_lines.append(f"| {so['original_filename']} | {so['format']} | {so['size_bytes']} B | {', '.join(ds_for_so)} |")
-
-    md_lines.extend(["", "## Detailed Datasets", ""])
+    md_lines.extend(["", "## Data Sheets", ""])
     for d in datasets:
-        md_lines.append(f"### Dataset `{d['dataset_id']}` (Sheet: `{d['sheet_or_table']}`)")
+        md_lines.append(f"### `{d['dataset_id']}` (sheet `{d['sheet_or_table']}`, header row {d['header_row_index']})")
         md_lines.append(f"- **Rows**: {d['row_count']}")
-        md_lines.append(f"- **Columns**: {', '.join(d['data_columns'])}")
-        if d['candidate_key_columns']:
-            md_lines.append(f"- **Candidate Keys**: {', '.join(d['candidate_key_columns'])}")
+        if d.get("preamble"):
+            md_lines.append(f"- **Stated in sheet**: {'; '.join(d['preamble'][:4])}")
+        if d["candidate_key_columns"]:
+            md_lines.append(f"- **Candidate keys**: {', '.join(d['candidate_key_columns'])}")
+        cats = [p for p in d["column_profiles"] if p.get("is_categorical")]
+        if cats:
+            md_lines.append("- **Categorical columns (exact filter values):**")
+            for p in cats[:12]:
+                md_lines.append(f"    - `{p['name']}` ∈ {p['distinct_values']}")
+        md_lines.append(f"- **All columns**: {', '.join(d['data_columns'])}")
         md_lines.append("")
-
-    if relationships:
-        md_lines.extend(["## Detected Join Relationships", ""])
-        for r in relationships:
-            md_lines.append(
-                f"- `{r['left_dataset_id']}` <-> `{r['right_dataset_id']}` on `{r['join_keys']}`: "
-                f"Cardinality `{r['tested_cardinality']}`, Overlap: {r['overlap_count']}"
-            )
-        md_lines.append("")
-
     source_knowledge_md = "\n".join(md_lines)
 
     source_knowledge_data = {
@@ -138,42 +219,14 @@ def survey_all_sources(run_id: str, source_files: list[str | Path]) -> dict[str,
         "global_limitations": [],
     }
 
-    # Store manifests in storage
-    default_storage.put_immutable(
-        tenant_id="default",
-        run_id=run_id,
-        logical_path="extracted/source_extraction_manifest.json",
-        body=json.dumps({"sources": source_objects}, indent=2),
-    )
-    default_storage.put_immutable(
-        tenant_id="default",
-        run_id=run_id,
-        logical_path="stage_1_claims/source_knowledge.json",
-        body=json.dumps(source_knowledge_data, indent=2),
-    )
-    default_storage.put_immutable(
-        tenant_id="default",
-        run_id=run_id,
-        logical_path="stage_1_claims/source_knowledge.md",
-        body=source_knowledge_md,
-    )
-    default_storage.put_immutable(
-        tenant_id="default",
-        run_id=run_id,
-        logical_path="stage_1_claims/schema_profiles.json",
-        body=json.dumps(datasets, indent=2),
-    )
-    default_storage.put_immutable(
-        tenant_id="default",
-        run_id=run_id,
-        logical_path="stage_1_claims/relationships.json",
-        body=json.dumps(relationships, indent=2),
-    )
-    default_storage.put_immutable(
-        tenant_id="default",
-        run_id=run_id,
-        logical_path="stage_1_claims/knowledge_graph.json",
-        body=json.dumps({"nodes": datasets, "edges": relationships}, indent=2),
-    )
+    for logical_path, body in [
+        ("extracted/source_extraction_manifest.json", json.dumps({"sources": source_objects}, indent=2)),
+        ("stage_1_claims/source_knowledge.json", json.dumps(source_knowledge_data, indent=2)),
+        ("stage_1_claims/source_knowledge.md", source_knowledge_md),
+        ("stage_1_claims/schema_profiles.json", json.dumps(datasets, indent=2)),
+        ("stage_1_claims/relationships.json", json.dumps(relationships, indent=2)),
+        ("stage_1_claims/knowledge_graph.json", json.dumps({"nodes": datasets, "edges": relationships}, indent=2)),
+    ]:
+        default_storage.put_derived(tenant_id="default", run_id=run_id, logical_path=logical_path, body=body)
 
     return source_knowledge_data

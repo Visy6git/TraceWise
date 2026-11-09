@@ -1,5 +1,7 @@
 from enum import StrEnum
+
 from pydantic import BaseModel, Field
+
 from app.schemas.messages import StageName
 
 
@@ -45,6 +47,9 @@ class RunSummary(BaseModel):
     status: RunStatus
     active_stage: StageName | None = None
     input_manifest_hash: str
+    stage_1_manifest_hash: str | None = None
+    stage_2_manifest_hash: str | None = None
+    stage_3_manifest_hash: str | None = None
     created_at: str
     version: int = 1
 

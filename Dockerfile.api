@@ -5,5 +5,5 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 EXPOSE 8000
-# This API shell is safe for local exploration only; agent tools are not wired yet.
+# Live mode can execute Bedrock-generated analysis in a host subprocess; this is not a security sandbox.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

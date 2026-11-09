@@ -1,8 +1,6 @@
-# TraceWise — Autonomous PBRER Evidence Harness Starter
+# TraceWise — PBRER Evidence Harness
 
-A UI-complete, backend-placeholder starter for the three-stage TraceWise architecture in the implementation blueprint.
-
-> **Important:** This is a scaffold, not a functioning pharmacovigilance calculation system. The frontend is interactive and runs with illustrative demo data. Uploads, agent execution, durable persistence, source extraction, calculations, sandboxing, approvals and evaluation are deliberately not connected. Backend endpoints return explicit `501 STARTER_BACKEND_NOT_IMPLEMENTED` responses instead of implying that work took place.
+TraceWise has a demo UI and a local live path for DOCX target reports, XLSX/CSV sources, AWS Bedrock claim/rule/evaluation calls, and reviewer-gated stage transitions. It is an engineering prototype, not a validated pharmacovigilance system.
 
 ## What is included
 
@@ -13,7 +11,7 @@ A UI-complete, backend-placeholder starter for the three-stage TraceWise archite
 - Claim register with search/status filtering, selected-claim inspector, editable claim draft, evidence hint, observed/inferred/unknown labels, source lineage chips and target-document navigation.
 - Report viewer prototype with section highlighting, claim excerpt and table layout.
 - Agent view, tool/activity timeline, source inspector drawer and stage-grouped artifact explorer.
-- AG-UI event types and SSE client adapter; backend SSE placeholder emits an AG-UI `RUN_STARTED` plus a TraceWise `CUSTOM` event.
+- AG-UI event types and SSE client adapter for run activity.
 - Typed Pydantic contracts, stage-specific agent packages and prompts, control-plane policy code, tool interfaces, service boundaries, tests and AWS deployment skeletons.
 
 ## Run the UI
@@ -26,11 +24,14 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL printed by the command (normally `http://localhost:5173`). The UI starts in **demo mode** with illustrative data. You can explore the workflow, edit a demo claim, inspect sources, add files to a new local demo run, and simulate each reviewer-gated stage.
+Open the Vite URL printed by the command (normally `http://localhost:5173`). The UI mode is selected from `MOCK_RUNS_ENABLED` in the repository-root `.env`:
 
-The demo upload flow stores file metadata in browser memory only. It does **not** upload file bytes or parse documents.
+- `true`: demo fixtures and simulated stages; uploads stay in browser memory.
+- `false`: live API mode; upload one DOCX report and one or more XLSX/CSV sources, then run each reviewer-gated stage against those files.
 
-## Run the API shell
+Restart the API and Vite servers after changing the flag.
+
+## Run the API
 
 Requirements: Python 3.11+.
 
@@ -41,16 +42,20 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-Then open `http://localhost:8000/docs` or `http://localhost:8000/health`.
+Then open `http://localhost:8000/docs` or `http://localhost:8000/health`. The API loads the repository-root `.env` on startup.
 
-The API shell exposes the intended routes and schemas, but the main application operations are placeholders and return HTTP 501. The events endpoint is only a keep-alive SSE demonstration. No real agent starts and no files are persisted. The local `SANDBOX_REQUIRED=true` policy is deliberately fail-closed.
+For live runs, configure `MOCK_RUNS_ENABLED=false`, `BEDROCK_ENABLED=true`, `AWS_REGION`, and `BEDROCK_MODEL_ID`. AWS credentials must come from the normal AWS credential chain (for example, an AWS profile); do not put keys in `.env`. The configured live profile uses `SANDBOX_BACKEND=local_subprocess` and `SANDBOX_REQUIRED=true`.
+
+**Execution warning:** `local_subprocess` is not an OS/container sandbox. Bedrock-generated Python runs as the API process user and can access that user's files and network despite the prompt restrictions. Use only in a controlled local environment with data and permissions approved for that execution. A proper isolated Docker/ECS sandbox is still required before production use.
+
+Live stages send extracted report blocks, claim details, source schema metadata, generated code, and results to the configured AWS Bedrock account. Use only files authorized for that processing. Stage 3 reruns the same generated code, so a numeric match is not independent validation; such results remain `NEEDS_HUMAN_REVIEW`. Human approvals remain explicit.
 
 ## Repository map
 
 ```text
 app/
   main.py                         FastAPI application shell
-  api/                            Typed HTTP route contracts (explicit 501 stubs)
+  api/                            Upload, run, stage, review and artifact routes
   control_plane/                  State transitions, approval checks, message ACLs, invalidation
   agents/
     base.py                       Strands factory boundary
@@ -90,7 +95,7 @@ The Run Control Plane is deterministic code outside the LLMs. Claims and Rules d
 pytest
 ```
 
-The included tests exercise stage transition guards, stale approval protection, cross-stage message restrictions, dependency invalidation, safe workspace path handling and fail-closed sandbox behavior. They do not test agent execution because no agent execution is connected yet.
+The tests cover control-plane policies, upload persistence, live/mock separation and fail-closed sandbox behavior. They do not make AWS calls or validate clinical calculations.
 
 Frontend checks:
 

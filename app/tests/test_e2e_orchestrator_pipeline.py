@@ -1,15 +1,16 @@
 """End-to-end integration test for the 3-stage reviewer-gated orchestrator pipeline."""
 from pathlib import Path
+
 import pytest
 
-from app.api.runs import create_run, get_run
-from app.api.stages import start_stage
-from app.api.review import review_stage
-from app.api.claims import list_claims, update_claim
-from app.api.sections import get_sections
-from app.api.sources import list_sources, get_source_knowledge
 from app.api.artifacts import list_artifacts, list_claim_artifacts
+from app.api.claims import list_claims, update_claim
 from app.api.evaluation import get_evaluation
+from app.api.review import review_stage
+from app.api.runs import create_run, get_run
+from app.api.sections import get_sections
+from app.api.sources import get_source_knowledge, list_sources
+from app.api.stages import start_stage
 from app.control_plane.run_state import RunState
 from app.schemas.claim import ClaimPatch
 from app.schemas.messages import StageName
@@ -19,6 +20,9 @@ from app.services.database import default_run_repo
 
 def test_full_three_stage_reviewer_gated_pipeline(tmp_path, monkeypatch):
     """Test full workflow from upload through Stage 1, Review 1, Stage 2, Review 2, Stage 3, and Final Review."""
+    if not Path("runtime/sample_pbrer_data").is_dir():
+        pytest.skip("Optional runtime/sample_pbrer_data fixtures are not present")
+
     # 1. Create Run with sample files
     create_req = CreateRunRequest(
         run_name="Nexipril 2024 PBRER Evaluation",

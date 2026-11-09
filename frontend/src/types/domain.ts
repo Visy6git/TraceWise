@@ -52,6 +52,17 @@ export interface Claim {
   derivedFrom?: string[];
   period?: string;
   locator: string;
+  version?: number;
+}
+
+export interface DocumentBlock {
+  block_id: string;
+  type: string;
+  section_id?: string;
+  section_number?: string;
+  text?: string;
+  headers?: string[];
+  rows?: string[][];
 }
 
 export interface AgentInfo {
@@ -119,4 +130,7 @@ export interface RunSnapshot {
   artifacts: ArtifactItem[];
   activeStage: StageId;
   reviewNote?: string;
+  inputManifestHash?: string;
+  stageManifestHashes?: Partial<Record<StageId, string>>;
+  documentBlocks?: DocumentBlock[];
 }

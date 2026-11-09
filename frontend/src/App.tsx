@@ -12,8 +12,8 @@ import {
 } from 'lucide-react';
 import { demoRun } from './data/demo';
 import { useAguiEvents } from './lib/agui';
-import { apiMode } from './lib/api';
-import type { ActivityItem, ArtifactItem, Claim, RunSnapshot, StageId, StageStatus } from './types/domain';
+import { api, apiMode } from './lib/api';
+import type { ActivityItem, ArtifactItem, Claim, DocumentBlock, RunSnapshot, SectionNode, StageId, StageStatus } from './types/domain';
 
 const stageOrder: StageId[] = ['claims', 'rules', 'evaluation'];
 const stageLabel: Record<StageId, string> = { claims: 'Claims', rules: 'Rules', evaluation: 'Evaluator' };
@@ -43,10 +43,161 @@ function IconButton({ children, onClick, title, disabled = false }: { children: 
   return <button className="icon-button" title={title} aria-label={title} disabled={disabled} onClick={onClick}>{children}</button>;
 }
 
+function emptyRun(): RunSnapshot {
+  const run = structuredClone(demoRun);
+  return {
+    ...run,
+    runId: '',
+    name: 'Create a live run',
+    product: '',
+    period: '',
+    status: 'Upload a DOCX target and XLSX/CSV sources to start',
+    createdAt: '',
+    targetDocument: 'No target uploaded',
+    sources: [],
+    sections: [],
+    claims: [],
+    stages: run.stages.map(stage => ({ ...stage, status: 'locked', progress: 0, agents: 0, subagents: 0, artifacts: 0 })),
+    agents: [],
+    activity: [],
+    artifacts: [],
+    activeStage: 'claims',
+    documentBlocks: [],
+  };
+}
+
+function mapServerClaim(value: Record<string, unknown>): Claim {
+  const hint = value.evidence_hint && typeof value.evidence_hint === 'object'
+    ? value.evidence_hint as Record<string, unknown>
+    : {};
+  const facts = (items: unknown) => Array.isArray(items)
+    ? items.map(item => typeof item === 'object' && item !== null
+      ? String((item as Record<string, unknown>).statement || '')
+      : String(item))
+    : [];
+  const locator = value.target_locator && typeof value.target_locator === 'object'
+    ? value.target_locator as Record<string, unknown>
+    : {};
+  return {
+    id: String(value.claim_id || ''),
+    sectionId: String(value.section_id || ''),
+    sectionNumber: String(value.section_number || ''),
+    sectionTitle: '',
+    statement: String(value.normalized_statement || value.raw_statement || ''),
+    reportedValue: value.reported_value == null ? '' : String(value.reported_value),
+    unit: String(value.unit || ''),
+    entity: String(value.entity_unit || ''),
+    status: String(value.status || 'hinted') as Claim['status'],
+    hint: {
+      text: String(hint.text || ''),
+      observed: facts(hint.observed),
+      inferred: facts(hint.inferred),
+      unknowns: Array.isArray(hint.unknowns) ? hint.unknowns.map(String) : [],
+    },
+    sourceIds: Array.isArray(hint.source_refs) ? hint.source_refs.map(String) : [],
+    artifacts: [],
+    period: String((value.reporting_period as Record<string, unknown> | undefined)?.value || ''),
+    locator: [locator.document_id, locator.block_id].filter(Boolean).join(' · '),
+    version: Number(value.version || 1),
+  };
+}
+
+function mapServerSections(values: Record<string, unknown>[]): SectionNode[] {
+  const nodes = new Map<string, SectionNode>();
+  const parents = new Map<string, string | null>();
+  for (const value of values) {
+    const id = String(value.section_id || '');
+    nodes.set(id, {
+      id,
+      number: String(value.number || ''),
+      title: String(value.title || ''),
+      level: Number(value.level || 0),
+      children: [],
+    });
+    parents.set(id, value.parent_id ? String(value.parent_id) : null);
+  }
+  const roots: SectionNode[] = [];
+  for (const [id, node] of nodes) {
+    const parentId = parents.get(id);
+    const parent = parentId ? nodes.get(parentId) : undefined;
+    if (parent) parent.children!.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
+
+function mapServerSource(value: Record<string, unknown>): RunSnapshot['sources'][number] {
+  const format = String(value.format || '').toLowerCase();
+  const kind = ['xlsx', 'csv', 'pdf', 'docx', 'xls'].includes(format) ? format : 'other';
+  return {
+    id: String(value.source_id || value.original_filename || ''),
+    name: String(value.original_filename || ''),
+    kind: kind as RunSnapshot['sources'][number]['kind'],
+    sizeLabel: `${(Number(value.size_bytes || 0) / 1024 / 1024).toFixed(1)} MB`,
+    status: value.extraction_status === 'complete' ? 'indexed' : 'pending',
+    hash: value.sha256 ? String(value.sha256) : undefined,
+    usedBy: 0,
+    sourceNote: Array.isArray(value.limitations) ? value.limitations.map(String).join('; ') : undefined,
+  };
+}
+
+function mapServerArtifact(value: Record<string, unknown>): ArtifactItem {
+  const logicalPath = String(value.logical_path || '');
+  const stage = String(value.stage || 'claims') as StageId;
+  return {
+    id: String(value.artifact_id || logicalPath),
+    name: logicalPath,
+    type: logicalPath.split('.').pop()?.toUpperCase() || 'Artifact',
+    stage,
+    size: `${Math.ceil(Number(value.size_bytes || 0) / 1024)} KB`,
+    version: `v${Number(value.version || 1)}`,
+    status: 'ready',
+    claimId: value.claim_id ? String(value.claim_id) : undefined,
+    updated: String(value.created_at || 'just now'),
+  };
+}
+
+function mapServerStatus(summary: Awaited<ReturnType<typeof api.getRun>>): Pick<RunSnapshot, 'stages' | 'activeStage' | 'stageManifestHashes' | 'status'> {
+  const stageState: Record<string, { active: StageId; completed: StageId[]; ready?: StageId; review?: StageId }> = {
+    READY_FOR_STAGE_1: { active: 'claims', completed: [], ready: 'claims' },
+    CLAIMS_RUNNING: { active: 'claims', completed: [] },
+    CLAIMS_AWAITING_REVIEW: { active: 'claims', completed: [], review: 'claims' },
+    CLAIMS_APPROVED: { active: 'rules', completed: ['claims'], ready: 'rules' },
+    RULES_RUNNING: { active: 'rules', completed: ['claims'] },
+    RULES_AWAITING_REVIEW: { active: 'rules', completed: ['claims'], review: 'rules' },
+    RULES_APPROVED: { active: 'evaluation', completed: ['claims', 'rules'], ready: 'evaluation' },
+    EVALUATION_RUNNING: { active: 'evaluation', completed: ['claims', 'rules'] },
+    EVALUATION_AWAITING_REVIEW: { active: 'evaluation', completed: ['claims', 'rules'], review: 'evaluation' },
+    COMPLETE: { active: 'evaluation', completed: ['claims', 'rules', 'evaluation'] },
+  };
+  const state = stageState[summary.status];
+  const isRunning = summary.status.endsWith('RUNNING');
+  const stages = structuredClone(demoRun.stages).map(stage => ({
+    ...stage,
+    status: state?.completed.includes(stage.id) ? 'approved' as const
+      : state?.review === stage.id ? 'review' as const
+        : isRunning && state?.active === stage.id ? 'running' as const
+          : state?.ready === stage.id ? 'ready' as const
+            : summary.status === 'FAILED' && state?.active === stage.id ? 'error' as const
+              : 'locked' as const,
+    progress: state?.completed.includes(stage.id) || state?.review === stage.id ? 100 : 0,
+  }));
+  return {
+    status: summary.status.replaceAll('_', ' '),
+    activeStage: state?.active || 'claims',
+    stages,
+    stageManifestHashes: {
+      claims: summary.stage_1_manifest_hash || undefined,
+      rules: summary.stage_2_manifest_hash || undefined,
+      evaluation: summary.stage_3_manifest_hash || undefined,
+    },
+  };
+}
+
 function App() {
-  const [run, setRun] = useState<RunSnapshot>(structuredClone(demoRun));
+  const [run, setRun] = useState<RunSnapshot>(apiMode ? emptyRun() : structuredClone(demoRun));
   const [activeSection, setActiveSection] = useState('s163');
-  const [selectedClaim, setSelectedClaim] = useState<string | null>('CLM-001');
+  const [selectedClaim, setSelectedClaim] = useState<string | null>(apiMode ? null : 'CLM-001');
   const [activeTab, setActiveTab] = useState<'activity' | 'document' | 'artifacts'>('activity');
   const [rightTab, setRightTab] = useState<'claims' | 'agents'>('claims');
   const [searchText, setSearchText] = useState('');
@@ -69,6 +220,7 @@ function App() {
   const [loadingStage, setLoadingStage] = useState(false);
   const uploadInput = useRef<HTMLInputElement>(null);
   const sourceInput = useRef<HTMLInputElement>(null);
+  const lastRefreshRef = useRef(0);
 
   const currentStage = run.stages.find(s => s.id === run.activeStage)!;
   const selectedClaimData = run.claims.find(c => c.id === selectedClaim) || null;
@@ -79,7 +231,9 @@ function App() {
     return matchesText && matchesStatus;
   }), [run.claims, searchText, claimStatusFilter]);
   const activityItems = showAllActivity ? [...run.activity].reverse() : [...run.activity].slice(-5).reverse();
-  const totalSubagents = run.agents.reduce((n, a) => n + a.children, 0);
+  const totalSubagents = apiMode
+    ? run.agents.filter(a => a.stage === run.activeStage).length
+    : run.agents.reduce((n, a) => n + a.children, 0);
 
   function pushActivity(item: Omit<ActivityItem, 'id' | 'time'>) {
     const now = new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -88,11 +242,110 @@ function App() {
   function patchStage(stageId: StageId, patch: Partial<RunSnapshot['stages'][number]>) {
     setRun(prev => ({ ...prev, stages: prev.stages.map(s => s.id === stageId ? { ...s, ...patch } : s) }));
   }
+  async function refreshLiveRun(runId: string) {
+    // Resilient: individual resources may 404 mid-run (e.g. document not yet
+    // extracted) — a miss on one must not drop the others.
+    const [summary, claims, sections, sources, artifacts, document] = await Promise.all([
+      api.getRun(runId).catch(() => null),
+      api.listClaims(runId).catch(() => [] as Record<string, unknown>[]),
+      api.getSections(runId).catch(() => [] as Record<string, unknown>[]),
+      api.listSources(runId).catch(() => [] as Record<string, unknown>[]),
+      api.listArtifacts(runId).catch(() => [] as Record<string, unknown>[]),
+      api.getDocument(runId).catch(() => ({ blocks: [] as DocumentBlock[] })),
+    ]);
+    setRun(prev => {
+      const mappedSources = sources.length ? sources.map(mapServerSource) : prev.sources;
+      const mappedArtifacts = artifacts.map(mapServerArtifact);
+      const artifactsByStage = mappedArtifacts.reduce<Record<string, number>>((acc, a) => {
+        acc[a.stage] = (acc[a.stage] || 0) + 1; return acc;
+      }, {});
+      const next: RunSnapshot = {
+        ...prev,
+        claims: claims.map(mapServerClaim),
+        sections: sections.length ? mapServerSections(sections) : prev.sections,
+        sources: mappedSources,
+        artifacts: mappedArtifacts,
+        documentBlocks: (document as { blocks: DocumentBlock[] }).blocks?.length
+          ? (document as { blocks: DocumentBlock[] }).blocks
+          : prev.documentBlocks,
+      };
+      if (summary) {
+        const mapped = mapServerStatus(summary);
+        // Merge: keep live progress/subagent counts for the running stage, and
+        // derive per-stage artifact counts from the refreshed artifact list.
+        next.stages = mapped.stages.map(stage => {
+          const prevStage = prev.stages.find(p => p.id === stage.id);
+          return {
+            ...stage,
+            progress: stage.status === 'running'
+              ? Math.max(prevStage?.progress ?? 8, stage.progress)
+              : stage.progress,
+            subagents: prevStage?.subagents ?? 0,
+            agents: prevStage?.agents ?? 0,
+            artifacts: artifactsByStage[stage.id] ?? prevStage?.artifacts ?? 0,
+          };
+        });
+        next.activeStage = mapped.activeStage;
+        next.status = mapped.status;
+        next.stageManifestHashes = mapped.stageManifestHashes;
+        next.inputManifestHash = summary.input_manifest_hash;
+      }
+      return next;
+    });
+  }
+  function scheduleRefresh(runId: string, force = false) {
+    if (!runId) return;
+    const now = Date.now();
+    if (force || now - lastRefreshRef.current > 1500) {
+      lastRefreshRef.current = now;
+      void refreshLiveRun(runId).catch(() => { /* resilient: ignore transient refresh errors */ });
+    }
+  }
+  async function beginLiveStage(stageId: StageId) {
+    if (!run.runId) {
+      setNotice('Create a live run with your DOCX and XLSX/CSV files first.');
+      return;
+    }
+    const inputHash = stageId === 'claims'
+      ? run.inputManifestHash
+      : stageId === 'rules'
+        ? run.stageManifestHashes?.claims
+        : run.stageManifestHashes?.rules;
+    if (!inputHash) {
+      setNotice(`The approved input manifest for ${stageLabel[stageId]} is missing.`);
+      return;
+    }
+    setLoadingStage(true);
+    // Reset per-stage live state; the stage runs in the background and streams
+    // progress, subagent dispatch and tool calls over AG-UI.
+    setRun(prev => ({
+      ...prev,
+      activeStage: stageId,
+      status: `${stageLabel[stageId]} · Running`,
+      agents: [],
+      stages: prev.stages.map(stage => stage.id === stageId
+        ? { ...stage, status: 'running', progress: 8, subagents: 0, agents: 0 }
+        : stage),
+    }));
+    try {
+      await api.startStage(run.runId, stageId, inputHash, crypto.randomUUID());
+      setNotice(`${stageLabel[stageId]} stage started — streaming live agent activity below.`);
+    } catch (error) {
+      patchStage(stageId, { status: 'error' });
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingStage(false);
+    }
+  }
   function beginStage(stageId: StageId) {
     const stage = run.stages.find(s => s.id === stageId);
     if (!stage || stage.status === 'locked' || stage.status === 'running') return;
     if (stageId === 'rules' && run.stages[0].status !== 'approved') return;
     if (stageId === 'evaluation' && run.stages[1].status !== 'approved') return;
+    if (apiMode) {
+      void beginLiveStage(stageId);
+      return;
+    }
     setLoadingStage(true);
     setRun(prev => ({ ...prev, activeStage: stageId, stages: prev.stages.map(s => s.id === stageId ? { ...s, status: 'running', progress: 8 } : s), status: `${stageLabel[stageId]} · Running` }));
     pushActivity({ stage: stageId, title: `${stageLabel[stageId]} Orchestrator started`, detail: 'New isolated stage context created by the Run Control Plane.', kind: 'agent', agent: `${stageLabel[stageId]} Orchestrator`, status: 'running' });
@@ -121,7 +374,25 @@ function App() {
       setLoadingStage(false);
     }, 2400);
   }
-  function approveStage(stageId: StageId) {
+  async function approveStage(stageId: StageId) {
+    if (apiMode) {
+      const expectedManifest = run.stageManifestHashes?.[stageId];
+      if (!run.runId || !expectedManifest) {
+        setNotice('The stage manifest is unavailable; approval was not sent.');
+        return;
+      }
+      try {
+        await api.reviewStage(run.runId, stageId, 'approve', expectedManifest, reviewNote || undefined);
+        const summary = await api.getRun(run.runId);
+        setRun(prev => ({ ...prev, ...mapServerStatus(summary) }));
+        setShowReview(false);
+        setReviewNote('');
+        setNotice(`${stageLabel[stageId]} approved by the API control plane.`);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     const stageIndex = stageOrder.indexOf(stageId);
     const nextStage = stageOrder[stageIndex + 1];
     patchStage(stageId, { status: 'approved' });
@@ -132,7 +403,23 @@ function App() {
     setNotice(nextStage ? `${stageLabel[stageId]} approved · ${stageLabel[nextStage]} is now unlocked.` : 'Final evaluation approved. Review dossier marked complete.');
     window.setTimeout(() => setNotice(''), 4000);
   }
-  function requestChanges(stageId: StageId) {
+  async function requestChanges(stageId: StageId) {
+    if (apiMode) {
+      const expectedManifest = run.stageManifestHashes?.[stageId];
+      if (!run.runId || !expectedManifest) {
+        setNotice('The stage manifest is unavailable; review changes were not sent.');
+        return;
+      }
+      try {
+        await api.reviewStage(run.runId, stageId, 'request_changes', expectedManifest, reviewNote || undefined);
+        const summary = await api.getRun(run.runId);
+        setRun(prev => ({ ...prev, ...mapServerStatus(summary), reviewNote }));
+        setShowReview(false);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     patchStage(stageId, { status: 'changes_requested' });
     pushActivity({ stage: stageId, title: 'Reviewer requested changes', detail: reviewNote || 'Reviewer requested changes; see review note in the audit log.', kind: 'warning', status: 'warning' });
     setRun(prev => ({ ...prev, status: `${stageLabel[stageId]} · Changes requested`, reviewNote }));
@@ -142,8 +429,33 @@ function App() {
     setClaimDraft({ statement: claim.statement, reportedValue: claim.reportedValue, unit: claim.unit });
     setShowClaimEditor(true);
   }
-  function saveClaim() {
+  async function saveClaim() {
     if (!selectedClaim) return;
+    if (apiMode) {
+      const claim = run.claims.find(item => item.id === selectedClaim);
+      if (!run.runId || !claim?.version) {
+        setNotice('The claim version is unavailable; the edit was not saved.');
+        return;
+      }
+      try {
+        const updated = await api.updateClaim(run.runId, selectedClaim, {
+          expected_version: claim.version,
+          reviewer_reason: 'Reviewer updated claim details in the live workspace',
+          normalized_statement: claimDraft.statement,
+          reported_value: claimDraft.reportedValue,
+          unit: claimDraft.unit,
+        }) as Record<string, unknown>;
+        setRun(prev => ({
+          ...prev,
+          claims: prev.claims.map(item => item.id === selectedClaim ? mapServerClaim(updated) : item),
+        }));
+        pushActivity({ stage: 'claims', title: `Claim ${selectedClaim} updated`, detail: 'Claim edit saved through the API.', kind: 'system', status: 'done' });
+        setShowClaimEditor(false);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     setRun(prev => ({ ...prev, claims: prev.claims.map(c => c.id === selectedClaim ? { ...c, ...claimDraft } : c) }));
     pushActivity({ stage: 'claims', title: `Claim ${selectedClaim} edited`, detail: 'Reviewer edit saved as a new Claim Register draft version.', kind: 'system', status: 'done' });
     setShowClaimEditor(false);
@@ -151,13 +463,16 @@ function App() {
   function addFiles(files: FileList | null, isTarget: boolean) {
     if (!files) return;
     setUploadError('');
-    const allowed = isTarget ? ['.docx', '.pdf'] : ['.xlsx', '.xls', '.csv', '.pdf', '.docx'];
+    const allowed = apiMode
+      ? (isTarget ? ['.docx'] : ['.xlsx', '.csv'])
+      : (isTarget ? ['.docx', '.pdf'] : ['.xlsx', '.xls', '.csv', '.pdf', '.docx']);
     const list = Array.from(files);
     const invalid = list.find(f => !allowed.some(ext => f.name.toLowerCase().endsWith(ext)));
     if (invalid) { setUploadError(`${invalid.name} is not a supported ${isTarget ? 'target report' : 'source'} file.`); return; }
     if (isTarget) setTargetFile(list[0]); else setSourceFiles(prev => [...prev, ...list]);
   }
   const aguiConnection = useAguiEvents(run.runId, apiMode, (event) => {
+    const runId = run.runId;
     if (event.type === 'CUSTOM' && event.name === 'tracewise.activity') {
       const value = (event.value || {}) as Record<string, unknown>;
       const stage = (value.stage as StageId) || run.activeStage;
@@ -171,18 +486,95 @@ function App() {
         artifact: value.artifact ? String(value.artifact) : undefined,
         status: (value.status as ActivityItem['status']) || 'done',
       });
-    } else if (event.type === 'TOOL_CALL_START') {
-      pushActivity({ stage: run.activeStage, title: `Tool started · ${String(event.toolCallName || 'tool')}`, detail: 'Tool invocation opened by the stage agent.', kind: 'tool', status: 'running' });
+    } else if (event.type === 'CUSTOM' && event.name === 'tracewise.stage') {
+      const value = (event.value || {}) as Record<string, unknown>;
+      const stage = (value.stage as StageId) || run.activeStage;
+      const status = String(value.status || 'running');
+      const progress = Number(value.progress || 0);
+      setRun(prev => ({
+        ...prev,
+        stages: prev.stages.map(s => s.id === stage ? {
+          ...s,
+          status: status === 'review' ? 'review' : status === 'error' ? 'error'
+            : status === 'running' ? 'running' : s.status,
+          progress: status === 'review' ? 100 : Math.max(s.progress, progress),
+        } : s),
+      }));
+      scheduleRefresh(runId, status === 'review' || status === 'error');
+    } else if (event.type === 'CUSTOM' && (event.name === 'tracewise.artifact' || event.name === 'tracewise.claim')) {
+      scheduleRefresh(runId);
     } else if (event.type === 'SUBAGENT_STARTED') {
-      pushActivity({ stage: run.activeStage, title: 'Subagent started', detail: `Invocation ${String(event.subagentRunId || '')} · isolated task context`, kind: 'agent', status: 'running' });
+      const stage = (event.stage as StageId) || run.activeStage;
+      const id = String(event.subagentId || event.subagentRunId || `sub-${Date.now()}`);
+      const name = String(event.name || 'Subagent');
+      setRun(prev => {
+        const agents = prev.agents.some(a => a.id === id) ? prev.agents : [...prev.agents, {
+          id, name, role: String(event.role || 'subagent'), stage,
+          status: 'active' as const, currentTask: String(event.detail || 'Working…'),
+          elapsed: '—', children: 0,
+        }];
+        const count = agents.filter(a => a.stage === stage).length;
+        return { ...prev, agents, stages: prev.stages.map(s => s.id === stage ? { ...s, subagents: count, agents: count } : s) };
+      });
+      pushActivity({ stage, title: `Subagent started · ${name}`, detail: String(event.detail || 'Isolated subsection extraction'), kind: 'agent', agent: name, status: 'running' });
+    } else if (event.type === 'SUBAGENT_FINISHED') {
+      const id = String(event.subagentId || event.subagentRunId || '');
+      const claims = Number(event.claims || 0);
+      setRun(prev => ({ ...prev, agents: prev.agents.map(a => a.id === id ? { ...a, status: 'done', currentTask: `${claims} claim(s) extracted` } : a) }));
+    } else if (event.type === 'SUBAGENT_ERROR') {
+      const id = String(event.subagentId || event.subagentRunId || '');
+      setRun(prev => ({ ...prev, agents: prev.agents.map(a => a.id === id ? { ...a, status: 'error', currentTask: String(event.message || 'error') } : a) }));
+    } else if (event.type === 'TOOL_CALL_START') {
+      pushActivity({ stage: run.activeStage, title: `Tool · ${String(event.toolName || 'tool')}`, detail: 'Scoped tool invocation opened by the stage agent.', kind: 'tool', status: 'running' });
     } else if (event.type === 'RUN_ERROR') {
       pushActivity({ stage: run.activeStage, title: 'Agent run error', detail: String(event.message || 'The agent run returned an error.'), kind: 'warning', status: 'error' });
+      scheduleRefresh(runId, true);
     }
   });
 
-  function createDemoRun() {
+  async function createDemoRun() {
     if (!targetFile) { setUploadError('Add one target PBRER document to continue.'); return; }
     if (!sourceFiles.length) { setUploadError('Add at least one source document to continue.'); return; }
+    if (apiMode) {
+      const body = new FormData();
+      body.append('run_name', newRunName);
+      body.append('target_file', targetFile);
+      sourceFiles.forEach(file => body.append('source_files', file));
+      setLoadingStage(true);
+      try {
+        const created = await api.createRun(body);
+        const liveRun = emptyRun();
+        liveRun.runId = created.run_id;
+        liveRun.name = created.run_name;
+        liveRun.targetDocument = targetFile.name;
+        liveRun.sources = sourceFiles.map((file, index) => ({
+          id: `source-${index}`,
+          name: file.name,
+          kind: file.name.split('.').pop()?.toLowerCase() as RunSnapshot['sources'][number]['kind'],
+          sizeLabel: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
+          status: 'pending',
+          usedBy: 0,
+        }));
+        liveRun.inputManifestHash = created.input_manifest_hash;
+        liveRun.stages = liveRun.stages.map((stage, index) => ({
+          ...stage,
+          status: index === 0 ? 'ready' : 'locked',
+        }));
+        liveRun.status = 'Ready for Stage 1';
+        setRun(liveRun);
+        setShowUpload(false);
+        setSelectedClaim(null);
+        setActiveSection('');
+        pushActivity({ stage: 'claims', title: 'Live run created', detail: 'Uploaded files are stored by the API for this run.', kind: 'system', status: 'done' });
+        setTargetFile(null);
+        setSourceFiles([]);
+      } catch (error) {
+        setUploadError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setLoadingStage(false);
+      }
+      return;
+    }
     const newRun = structuredClone(demoRun);
     newRun.runId = `TW-26-${Date.now().toString().slice(-6)}`;
     newRun.name = newRunName;
@@ -203,7 +595,7 @@ function App() {
         <div className="topbar-divider" />
         <div className="run-selector"><span className="run-breadcrumb">PROJECT</span><ChevronRight size={13} /><strong>{run.runId}</strong><ChevronDown size={14} /></div>
         <div className="topbar-spacer" />
-        <span className="demo-chip"><span />DEMO DATA</span>
+        <span className="demo-chip"><span />{apiMode ? 'LIVE API' : 'DEMO DATA'}</span>
         <button className="top-icon" title="Command palette"><Command size={16} /><kbd>⌘ K</kbd></button>
         <button className="top-icon" title="Settings"><Settings2 size={17} /></button>
         <div className="topbar-divider short" />
@@ -215,7 +607,7 @@ function App() {
           <div className="rail-topline"><span>RUN WORKSPACE</span><IconButton title={leftCollapsed ? 'Expand left panel' : 'Collapse left panel'} onClick={() => setLeftCollapsed(!leftCollapsed)}><PanelLeftClose size={15} /></IconButton></div>
           {!leftCollapsed && <>
             <div className="run-summary"><div className="run-summary-icon"><FileCheck2 size={18} /></div><div className="run-summary-copy"><strong>{run.name}</strong><span>{run.period}</span></div><button className="plain-icon"><MoreHorizontal size={16} /></button></div>
-            <div className="rail-section-head"><span>DOCUMENT STRUCTURE</span><span className="tiny-count">18</span></div>
+            <div className="rail-section-head"><span>DOCUMENT STRUCTURE</span><span className="tiny-count">{apiMode ? run.sections.length : 18}</span></div>
             <div className="tree-tools"><span className="outline-search"><Search size={13} /><input placeholder="Find section" /></span><IconButton title="Expand all"><ChevronDown size={14} /></IconButton></div>
             <div className="tree-list">
               <SectionTree nodes={run.sections} activeId={activeSection} onSelect={id => { setActiveSection(id); setActiveTab('document'); }} />
@@ -240,7 +632,7 @@ function App() {
 
           <div className="metric-strip">
             <Metric icon={<FileText size={16} />} label="SOURCE FILES" value={String(run.sources.length).padStart(2, '0')} sub="All inventoried" />
-            <Metric icon={<Layers3 size={16} />} label="LEAF SUBSECTIONS" value="06" sub="Section 16.3" />
+            <Metric icon={<Layers3 size={16} />} label={apiMode ? 'SECTION 16.3 NODES' : 'LEAF SUBSECTIONS'} value={apiMode ? String(run.sections.length).padStart(2, '0') : '06'} sub={apiMode ? 'Scoped subtree' : 'Section 16.3'} />
             <Metric icon={<CheckCheck size={16} />} label="CLAIMS MAPPED" value={String(run.claims.length).padStart(2, '0')} sub="Atomic claim records" />
             <Metric icon={<Bot size={16} />} label="SUBAGENTS" value={String(totalSubagents).padStart(2, '0')} sub="Across active stage" />
             <Metric icon={<FileCode2 size={16} />} label="ARTIFACTS" value={String(run.artifacts.length).padStart(2, '0')} sub="Versioned outputs" />
@@ -259,7 +651,7 @@ function App() {
                   <button className={activeTab === 'artifacts' ? 'active' : ''} onClick={() => setActiveTab('artifacts')}><FolderOpen size={14} />Artifacts <span className="tab-count">{run.artifacts.length}</span></button>
                 </div>
                 {activeTab === 'activity' && <ActivityView items={activityItems} onSource={id => { setSelectedSource(id); setShowSourcePanel(true); }} onArtifact={() => setActiveTab('artifacts')} showAll={showAllActivity} setShowAll={setShowAllActivity} />}
-                {activeTab === 'document' && <DocumentView run={run} activeSection={activeSection} onSection={setActiveSection} onClaim={id => setSelectedClaim(id)} />}
+                {activeTab === 'document' && <DocumentView run={run} activeSection={activeSection} onSection={setActiveSection} onClaim={id => setSelectedClaim(id)} live={apiMode} />}
                 {activeTab === 'artifacts' && <ArtifactView artifacts={run.artifacts} onOpen={a => { setSelectedClaim(a.claimId || selectedClaim); setActiveTab('activity'); setNotice(`${a.name} selected · artifact preview is a demo placeholder.`); }} />}
               </div>
               <div className="panel stage-panel">
@@ -304,7 +696,7 @@ function App() {
       {showReview && <ReviewModal stage={currentStage} note={reviewNote} setNote={setReviewNote} onClose={() => setShowReview(false)} onApprove={() => approveStage(currentStage.id)} onRequestChanges={() => requestChanges(currentStage.id)} />}
       {showClaimEditor && selectedClaimData && <ClaimEditor claim={selectedClaimData} draft={claimDraft} setDraft={setClaimDraft} onClose={() => setShowClaimEditor(false)} onSave={saveClaim} />}
       {showSourcePanel && activeSource && <SourceDrawer source={activeSource} onClose={() => setShowSourcePanel(false)} />}
-      {showUpload && <UploadModal name={newRunName} setName={setNewRunName} targetFile={targetFile} sourceFiles={sourceFiles} error={uploadError} inputTarget={uploadInput} inputSources={sourceInput} onAddFiles={addFiles} onRemoveSource={i => setSourceFiles(prev => prev.filter((_, idx) => idx !== i))} onClose={() => setShowUpload(false)} onCreate={createDemoRun} />}
+      {showUpload && <UploadModal name={newRunName} setName={setNewRunName} targetFile={targetFile} sourceFiles={sourceFiles} error={uploadError} inputTarget={uploadInput} inputSources={sourceInput} onAddFiles={addFiles} onRemoveSource={i => setSourceFiles(prev => prev.filter((_, idx) => idx !== i))} onClose={() => setShowUpload(false)} onCreate={createDemoRun} live={apiMode} loading={loadingStage} />}
     </div>
   );
 }
@@ -336,7 +728,20 @@ function ActivityView({ items, onSource, onArtifact, showAll, setShowAll }: { it
     <div className="trace-footnote"><ShieldCheck size={13} /><span>Activity trace shows operations and tool outcomes only. Private model reasoning is never displayed.</span></div>
   </div>;
 }
-function DocumentView({ run, activeSection, onSection, onClaim }: { run: RunSnapshot; activeSection: string; onSection: (id: string) => void; onClaim: (id: string) => void }) {
+function DocumentView({ run, activeSection, onSection, onClaim, live }: { run: RunSnapshot; activeSection: string; onSection: (id: string) => void; onClaim: (id: string) => void; live: boolean }) {
+  if (live) {
+    return <div className="document-view">
+      <div className="document-toolbar"><div><span className="doc-icon"><BookOpen size={14} /></span><strong>{run.targetDocument}</strong><span className="doc-page">EXTRACTED SOURCE</span></div></div>
+      <div className="document-canvas"><div className="document-page">
+        {run.documentBlocks?.length
+          ? run.documentBlocks.map(block => block.type === 'table'
+            ? <table key={block.block_id}><tbody>{[block.headers || [], ...(block.rows || [])].map((row, rowIndex) => <tr key={`${block.block_id}-${rowIndex}`}>{row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}</tr>)}</tbody></table>
+            : <p key={block.block_id}>{block.text}</p>)
+          : <p>Start Stage 1 to extract the uploaded report. No demo report content is shown in live mode.</p>}
+      </div></div>
+      <div className="document-footer"><span><Lock size={11} />Read-only extracted input</span><span>{run.documentBlocks?.length || 0} blocks</span><span className="footer-spacer" /><button onClick={() => onSection(run.sections[0]?.id || '')}>Sections: {run.sections.length}</button></div>
+    </div>;
+  }
   const claim = run.claims.find(c => c.sectionId === activeSection) || run.claims[0];
   return <div className="document-view"><div className="document-toolbar"><div><span className="doc-icon"><BookOpen size={14} /></span><strong>{run.targetDocument}</strong><span className="doc-page">PAGE 118 / 146</span></div><div><button className="doc-tool"><Search size={14} />Find</button><button className="doc-tool"><Download size={14} />Export excerpt</button></div></div><div className="document-canvas"><div className="document-page"><div className="doc-running-head">PERIODIC BENEFIT-RISK EVALUATION REPORT <span>CONFIDENTIAL</span></div><div className="doc-rule" /><div className="doc-section-number">16.3</div><h2>Benefit-risk evaluation</h2><p className="doc-intro">The benefit-risk profile of the product remains favourable when used in accordance with the approved product information. The following section provides an integrated evaluation of important identified risks, potential risks and missing information for the reporting interval.</p><div className="doc-section-number">16.3.1</div><h3>Important identified risks</h3><div className="doc-section-number">16.3.1.1</div><h4>Hepatic events</h4><p>During the reporting interval, hepatic events continued to be monitored through the global safety database and cumulative review of spontaneous and solicited safety information.</p><div className="doc-highlight"><span className="highlight-label">CLAIM · {claim?.id || 'CLM-001'}</span><p>{claim?.statement || 'Select a claim to inspect its source statement.'}</p><button onClick={() => claim && onClaim(claim.id)}>Inspect claim <ArrowUpRight size={12} /></button></div><p>A review of seriousness, expectedness and temporal association was conducted in line with the approved methodology. Relevant source coverage and coding criteria are described in the supporting data package.</p><div className="doc-table"><div><strong>Measure</strong><strong>Reporting interval</strong></div><div><span>Cases with hepatic events</span><span>184</span></div><div><span>Serious cases</span><span>39</span></div><div><span>Cases with outcome reported</span><span>—</span></div></div><div className="doc-footnote">This is illustrative viewer content for the starter UI. Uploaded report extraction and exact locators are not yet connected.</div><div className="doc-page-number">118</div></div></div><div className="document-footer"><span><Lock size={11} />Read-only original</span><span>Selected node: {run.sections.flatMap(s => [s, ...(s.children || []), ...(s.children || []).flatMap(c => c.children || [])]).find(s => s.id === activeSection)?.number || '16.3'}</span><span className="footer-spacer" /><button onClick={() => onSection('s163')}>Go to Section 16.3 <ArrowUpRight size={12} /></button></div></div>;
 }
@@ -366,8 +771,49 @@ function ClaimEditor({ claim, draft, setDraft, onClose, onSave }: { claim: Claim
 function SourceDrawer({ source, onClose }: { source: RunSnapshot['sources'][number]; onClose: () => void }) {
   return <div className="drawer-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><aside className="source-drawer"><div className="drawer-header"><div><span className="modal-kicker">SOURCE INTELLIGENCE</span><h2>{source.name}</h2></div><button className="icon-button" onClick={onClose}><X size={17} /></button></div><div className="source-drawer-body"><div className="source-file-hero"><div className={`file-icon large ${source.kind}`}>{fileIcon(source.kind)}</div><div><strong>{source.name}</strong><span>{source.kind.toUpperCase()} · {source.sizeLabel}</span></div><StagePill status={source.status} /></div><div className="drawer-stats"><div><span>RECORDS</span><strong>{source.rows?.toLocaleString() || '—'}</strong></div><div><span>WORKSHEETS</span><strong>{source.sheets || '—'}</strong></div><div><span>CLAIMS LINKED</span><strong>{source.usedBy}</strong></div></div><div className="drawer-section"><h3>Integrity</h3><div className="integrity-row"><Lock size={13} />Immutable source snapshot <CheckCircle2 size={14} /></div><div className="hash-box"><span>SHA-256</span><code>{source.hash || 'Generated at ingestion'}</code><button title="Copy hash"><Copy size={12} /></button></div></div><div className="drawer-section"><h3>Source understanding</h3><p>{source.sourceNote || 'No source limitations recorded in the demo fixture.'}</p><div className="source-tags"><span>Schema profile</span><span>Column summary</span><span>Join candidates</span></div></div><div className="drawer-section"><h3>Used in claims</h3><p className="muted-copy">The real backend will derive this list from versioned evidence bundles. The demo displays the source usage count only.</p></div></div><div className="drawer-footer"><button className="button-secondary full-width" onClick={onClose}>Close source inspector</button></div></aside></div>;
 }
-function UploadModal({ name, setName, targetFile, sourceFiles, error, inputTarget, inputSources, onAddFiles, onRemoveSource, onClose, onCreate }: { name: string; setName: (v: string) => void; targetFile: File | null; sourceFiles: File[]; error: string; inputTarget: any; inputSources: any; onAddFiles: (files: FileList | null, target: boolean) => void; onRemoveSource: (i: number) => void; onClose: () => void; onCreate: () => void }) {
-  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="modal upload-modal"><div className="modal-top"><span className="modal-kicker">NEW RECONCILIATION RUN</span><button className="icon-button" onClick={onClose}><X size={17} /></button></div><div className="upload-title"><div className="upload-title-icon"><CloudUpload size={22} /></div><div><h2>Start with your documents</h2><p>One target PBRER and all supporting source files. Nothing runs until you start Stage 1.</p></div></div><label className="field-label">RUN NAME<input value={name} onChange={e => setName(e.target.value)} /></label><div className="upload-block"><div className="upload-block-head"><div><span className="step-number">01</span><strong>Target report</strong><small>Primary PBRER · DOCX or PDF</small></div><span className="required-label">REQUIRED</span></div><button className={cx('dropzone', targetFile ? 'has-file' : false)} onClick={() => inputTarget.current?.click()} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); onAddFiles(e.dataTransfer.files, true); }}><input ref={inputTarget} type="file" accept=".docx,.pdf" hidden onChange={e => onAddFiles(e.target.files, true)} />{targetFile ? <><span className="file-selected-icon"><FileCheck2 size={20} /></span><span><strong>{targetFile.name}</strong><small>{(targetFile.size / 1024 / 1024).toFixed(1)} MB · selected</small></span><CheckCircle2 size={17} /></> : <><Upload size={19} /><span><strong>Drop the target document here</strong><small>or browse files · .docx, .pdf</small></span><span className="browse-label">Browse</span></>}</button></div><div className="upload-block"><div className="upload-block-head"><div><span className="step-number">02</span><strong>Source documents</strong><small>Workbooks, listings, reports and dictionaries</small></div><span className="required-label">1+ REQUIRED</span></div><div className="source-file-picks">{sourceFiles.map((f, i) => <div key={`${f.name}-${i}`} className="picked-file"><FileSpreadsheet size={15} /><span><strong>{f.name}</strong><small>{(f.size / 1024 / 1024).toFixed(1)} MB</small></span><button onClick={() => onRemoveSource(i)}><X size={13} /></button></div>)}</div><button className="source-add-button" onClick={() => inputSources.current?.click()} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); onAddFiles(e.dataTransfer.files, false); }}><input ref={inputSources} type="file" accept=".xlsx,.xls,.csv,.pdf,.docx" multiple hidden onChange={e => onAddFiles(e.target.files, false)} /><Plus size={15} />Add source files <span>· .xlsx .xls .csv .pdf .docx</span></button></div><div className="upload-privacy"><Lock size={13} /><span>Private by default. Original files are immutable inputs. Runtime data stays outside Git.</span></div>{error && <div className="upload-error"><AlertCircle size={14} />{error}</div>}<div className="modal-footer"><button className="button-secondary" onClick={onClose}>Cancel</button><button className="button-primary" onClick={onCreate} disabled={!targetFile || sourceFiles.length === 0}>Create run <ArrowRight size={15} /></button></div><p className="demo-note">Starter behavior: this creates a local demo run. File bytes are not uploaded to a backend yet.</p></div></div>;
+function UploadModal({ name, setName, targetFile, sourceFiles, error, inputTarget, inputSources, onAddFiles, onRemoveSource, onClose, onCreate, live, loading }: {
+  name: string;
+  setName: (v: string) => void;
+  targetFile: File | null;
+  sourceFiles: File[];
+  error: string;
+  inputTarget: React.RefObject<HTMLInputElement>;
+  inputSources: React.RefObject<HTMLInputElement>;
+  onAddFiles: (files: FileList | null, target: boolean) => void;
+  onRemoveSource: (i: number) => void;
+  onClose: () => void;
+  onCreate: () => void;
+  live: boolean;
+  loading: boolean;
+}) {
+  const targetAccept = live ? '.docx' : '.docx,.pdf';
+  const sourceAccept = live ? '.xlsx,.csv' : '.xlsx,.xls,.csv,.pdf,.docx';
+  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal upload-modal">
+      <div className="modal-top"><span className="modal-kicker">NEW RECONCILIATION RUN</span><button className="icon-button" onClick={onClose}><X size={17} /></button></div>
+      <div className="upload-title"><div className="upload-title-icon"><CloudUpload size={22} /></div><div><h2>Start with your documents</h2><p>One target PBRER and all supporting source files. Nothing runs until you start Stage 1.</p></div></div>
+      <label className="field-label">RUN NAME<input value={name} onChange={e => setName(e.target.value)} /></label>
+      <div className="upload-block">
+        <div className="upload-block-head"><div><span className="step-number">01</span><strong>Target report</strong><small>Primary PBRER · {live ? 'DOCX' : 'DOCX or PDF'}</small></div><span className="required-label">REQUIRED</span></div>
+        <button className={cx('dropzone', targetFile ? 'has-file' : false)} onClick={() => inputTarget.current?.click()} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); onAddFiles(e.dataTransfer.files, true); }}>
+          <input ref={inputTarget} type="file" accept={targetAccept} hidden onChange={e => onAddFiles(e.target.files, true)} />
+          {targetFile ? <><span className="file-selected-icon"><FileCheck2 size={20} /></span><span><strong>{targetFile.name}</strong><small>{(targetFile.size / 1024 / 1024).toFixed(1)} MB · selected</small></span><CheckCircle2 size={17} /></> : <><Upload size={19} /><span><strong>Drop the target document here</strong><small>or browse files · {targetAccept}</small></span><span className="browse-label">Browse</span></>}
+        </button>
+      </div>
+      <div className="upload-block">
+        <div className="upload-block-head"><div><span className="step-number">02</span><strong>Source documents</strong><small>{live ? 'Excel workbooks and CSV data' : 'Workbooks, listings, reports and dictionaries'}</small></div><span className="required-label">1+ REQUIRED</span></div>
+        <div className="source-file-picks">{sourceFiles.map((file, index) => <div key={`${file.name}-${index}`} className="picked-file"><FileSpreadsheet size={15} /><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(1)} MB</small></span><button onClick={() => onRemoveSource(index)}><X size={13} /></button></div>)}</div>
+        <button className="source-add-button" onClick={() => inputSources.current?.click()} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); onAddFiles(e.dataTransfer.files, false); }}>
+          <input ref={inputSources} type="file" accept={sourceAccept} multiple hidden onChange={e => onAddFiles(e.target.files, false)} />
+          <Plus size={15} />Add source files <span>· {sourceAccept.replaceAll(',', ' ')}</span>
+        </button>
+      </div>
+      <div className="upload-privacy"><Lock size={13} /><span>{live ? 'Files are stored in this run’s local storage; report text and selected metadata are sent to AWS Bedrock during live stages.' : 'Private by default. Files stay in browser memory and are not uploaded.'}</span></div>
+      {error && <div className="upload-error"><AlertCircle size={14} />{error}</div>}
+      <div className="modal-footer"><button className="button-secondary" onClick={onClose}>Cancel</button><button className="button-primary" onClick={onCreate} disabled={!targetFile || sourceFiles.length === 0 || loading}>{loading ? 'Uploading…' : 'Create run'} <ArrowRight size={15} /></button></div>
+      <p className="demo-note">{live ? 'Live mode · real API and Bedrock calls' : 'Demo only · uploaded file bytes are not sent to a backend.'}</p>
+    </div>
+  </div>;
 }
 
 export default App;

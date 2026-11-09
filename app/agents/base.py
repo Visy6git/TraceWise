@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from strands import Agent
+
+from app.config import MOCK_RUNS_ENABLED
 from app.services.bedrock import build_bedrock_model
 from app.services.event_stream import default_broker
 
@@ -50,18 +52,19 @@ class FallbackAgentRunner:
 def build_strands_agent(config: AgentRuntimeConfig, tools: list[Any]) -> Any:
     """Construct a Strands Agent with BedrockModel and stage tool profile."""
     model = build_bedrock_model(config.model_id)
+    if model is None:
+        if MOCK_RUNS_ENABLED:
+            return FallbackAgentRunner(config, tools)
+        raise RuntimeError("BEDROCK_ENABLED must be true when MOCK_RUNS_ENABLED is false")
 
-    if model is not None:
-        try:
-            agent = Agent(
-                agent_id=config.agent_id,
-                name=config.agent_id,
-                system_prompt=config.system_prompt,
-                model=model,
-                tools=tools,
-            )
-            return agent
-        except Exception as e:
-            logger.warning(f"Error creating Strands Agent with Bedrock: {e}. Using local runner.")
-
-    return FallbackAgentRunner(config, tools)
+    try:
+        return Agent(
+            agent_id=config.agent_id,
+            name=config.agent_id,
+            system_prompt=config.system_prompt,
+            model=model,
+            tools=tools,
+        )
+    except Exception:
+        logger.exception("Could not construct live Strands agent %s", config.agent_id)
+        raise

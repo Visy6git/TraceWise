@@ -1,24 +1,19 @@
-"""AWS Bedrock configuration adapter using boto3 and Strands BedrockModel.
-
-Supports boto3 Bedrock runtime calls with graceful local execution fallback
-when AWS infrastructure is not yet provisioned.
-"""
+"""AWS Bedrock configuration adapter using boto3 and Strands BedrockModel."""
 from __future__ import annotations
 
-import logging
-import os
+import json
 from typing import Any
 
 import boto3
 from botocore.config import Config
 from strands.models import BedrockModel
 
-logger = logging.getLogger(__name__)
+from app.config import AWS_REGION, BEDROCK_ENABLED, BEDROCK_MODEL_ID
 
 
 def get_boto3_bedrock_client(region: str | None = None) -> Any:
     """Create a boto3 bedrock-runtime client with retry configuration."""
-    region_name = region or os.environ.get("AWS_REGION", "ap-south-1")
+    region_name = region or AWS_REGION
     config = Config(
         region_name=region_name,
         retries={"max_attempts": 3, "mode": "standard"},
@@ -29,29 +24,59 @@ def get_boto3_bedrock_client(region: str | None = None) -> Any:
     return session.client("bedrock-runtime", config=config)
 
 
+def invoke_bedrock(
+    prompt: str,
+    model_id: str | None = None,
+    region: str | None = None,
+    max_tokens: int = 8192,
+) -> str:
+    """Invoke the configured Bedrock model; live-mode errors are never hidden."""
+    if not BEDROCK_ENABLED:
+        raise RuntimeError("BEDROCK_ENABLED must be true to run live agent stages")
+
+    selected_model_id = model_id or BEDROCK_MODEL_ID
+    client = get_boto3_bedrock_client(region)
+    response = client.converse(
+        modelId=selected_model_id,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": max_tokens},
+    )
+    content = response.get("output", {}).get("message", {}).get("content", [])
+    text = "\n".join(part["text"] for part in content if isinstance(part.get("text"), str))
+    if not text.strip():
+        raise RuntimeError("Bedrock returned an empty response")
+    return text
+
+
 def build_bedrock_model(model_id: str | None = None, region: str | None = None) -> Any:
-    """Build a Strands BedrockModel instance using boto3 session.
-
-    If credentials are not yet provisioned, returns a configured BedrockModel
-    or local model adapter.
-    """
-    selected_model_id = model_id or os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-20250514-v1:0")
-    selected_region = region or os.environ.get("AWS_REGION", "ap-south-1")
-
-    session = boto3.Session(region_name=selected_region)
-    client_config = Config(
+    """Build the Strands model adapter without masking configuration errors."""
+    if not BEDROCK_ENABLED:
+        return None
+    selected_region = region or AWS_REGION
+    return BedrockModel(
+        model_id=model_id or BEDROCK_MODEL_ID,
+        boto_session=boto3.Session(region_name=selected_region),
+        boto_client_config=Config(
+            region_name=selected_region,
+            retries={"max_attempts": 3, "mode": "standard"},
+        ),
         region_name=selected_region,
-        retries={"max_attempts": 3, "mode": "standard"},
     )
 
-    try:
-        model = BedrockModel(
-            model_id=selected_model_id,
-            boto_session=session,
-            boto_client_config=client_config,
-            region_name=selected_region,
-        )
-        return model
-    except Exception as e:
-        logger.warning(f"Could not initialize Strands BedrockModel with live AWS: {e}. Fallback enabled.")
-        return None
+
+def parse_bedrock_json(response_text: str) -> Any:
+    """Parse one JSON object or array from a model response, including fenced JSON."""
+    candidate = response_text.strip()
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[-1]
+        if candidate.rstrip().endswith("```"):
+            candidate = candidate.rstrip()[:-3].strip()
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(candidate):
+        if character in "[{":
+            try:
+                value, _ = decoder.raw_decode(candidate[index:])
+                return value
+            except json.JSONDecodeError:
+                continue
+    raise ValueError("Bedrock response did not contain valid JSON")

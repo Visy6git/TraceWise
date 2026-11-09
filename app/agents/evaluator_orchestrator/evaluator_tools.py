@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from app.config import MOCK_RUNS_ENABLED
 from app.services.sandbox_client import default_sandbox
 from app.tools.artifact_tools import read_artifact as base_read_artifact
 from app.tools.workspace_tools import get_claim_workspace_dir
@@ -16,12 +17,14 @@ def inspect_artifact(artifact_id: str) -> dict[str, Any]:
 
 
 def rerun_artifact_independently(claim_id: str, run_id: str, source_dir: str | Path | None = None) -> dict[str, Any]:
-    """Copy published script to a clean temporary isolated workspace and execute independently."""
+    """Copy the published script to a fresh temporary workspace and rerun it."""
     ws_dir = get_claim_workspace_dir(claim_id, run_id=run_id)
     script_file = ws_dir / "analysis.py"
 
     if not script_file.exists():
         raise FileNotFoundError(f"Analysis script not found in claim workspace {claim_id}")
+    if source_dir is None and not MOCK_RUNS_ENABLED:
+        raise ValueError("A run-specific source directory is required in live mode")
 
     # Create clean temp sandbox
     with tempfile.TemporaryDirectory() as clean_sandbox_dir:

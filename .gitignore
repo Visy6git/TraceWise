@@ -19,6 +19,9 @@ dist/
 *.key
 *.sqlite
 *.db
+aws_creds.py
+*_creds.py
+credentials*.json
 
 # PHI, source uploads, runtime workspaces and artifacts must never enter Git
 .tracewise-runtime/
