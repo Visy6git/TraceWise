@@ -100,7 +100,35 @@ class EventBroker:
         )
         self.publish(run_id, evt)
 
-    def emit_artifact_update(self, run_id: str, artifact_id: str, logical_path: str, version: int, sha256: str, claim_id: str | None = None, status: str = "ready") -> None:
+    def emit_run_started(self, run_id: str, stage: str) -> None:
+        self.publish(
+            run_id,
+            agui_event("RUN_STARTED", threadId=run_id, runId=run_id, stage=stage),
+        )
+
+    def emit_run_finished(self, run_id: str, stage: str, result: dict[str, Any] | None = None) -> None:
+        self.publish(
+            run_id,
+            agui_event(
+                "RUN_FINISHED",
+                threadId=run_id,
+                runId=run_id,
+                stage=stage,
+                result=result or {},
+            ),
+        )
+
+    def emit_artifact_update(
+        self,
+        run_id: str,
+        artifact_id: str,
+        logical_path: str,
+        version: int,
+        sha256: str,
+        claim_id: str | None = None,
+        status: str = "ready",
+        stage: str | None = None,
+    ) -> None:
         evt = agui_event(
             "CUSTOM",
             threadId=run_id,
@@ -109,6 +137,7 @@ class EventBroker:
             value={
                 "artifactId": artifact_id,
                 "logicalPath": logical_path,
+                "stage": stage,
                 "version": version,
                 "sha256": sha256,
                 "claimId": claim_id,
@@ -117,18 +146,48 @@ class EventBroker:
         )
         self.publish(run_id, evt)
 
-    def emit_claim_update(self, run_id: str, claim_id: str, section_id: str, status: str, claim_version: int = 1) -> None:
+    def emit_artifact_ready(self, run_id: str, stage: str, artifact: dict[str, Any]) -> None:
+        self.emit_artifact_update(
+            run_id=run_id,
+            artifact_id=str(artifact.get("artifact_id", "")),
+            logical_path=str(artifact.get("logical_path", "")),
+            version=int(artifact.get("version", 1)),
+            sha256=str(artifact.get("sha256", "")),
+            claim_id=artifact.get("claim_id"),
+            status=str(artifact.get("status", "ready")),
+            stage=stage,
+        )
+
+    def emit_claim_update(
+        self,
+        run_id: str,
+        claim_or_id: dict[str, Any] | str,
+        section_id: str | None = None,
+        status: str | None = None,
+        claim_version: int = 1,
+    ) -> None:
+        if isinstance(claim_or_id, dict):
+            claim = claim_or_id
+            value = {
+                "claimId": claim.get("claim_id", ""),
+                "sectionId": claim.get("section_id", ""),
+                "status": claim.get("status", "hinted"),
+                "claimVersion": claim.get("version", 1),
+                "claim": claim,
+            }
+        else:
+            value = {
+                "claimId": claim_or_id,
+                "sectionId": section_id or "",
+                "status": status or "hinted",
+                "claimVersion": claim_version,
+            }
         evt = agui_event(
             "CUSTOM",
             threadId=run_id,
             runId=run_id,
             name="tracewise.claim",
-            value={
-                "claimId": claim_id,
-                "sectionId": section_id,
-                "status": status,
-                "claimVersion": claim_version,
-            },
+            value=value,
         )
         self.publish(run_id, evt)
 
@@ -179,13 +238,43 @@ class EventBroker:
             message=message,
         ))
 
-    def emit_tool_call(self, run_id: str, tool_name: str, args_summary: dict[str, Any], result_summary: dict[str, Any] | None = None) -> None:
-        call_id = f"tool-{int(time.time() * 1000)}"
-        self.publish(run_id, agui_event("TOOL_CALL_START", threadId=run_id, runId=run_id, toolCallId=call_id, toolName=tool_name))
-        self.publish(run_id, agui_event("TOOL_CALL_ARGS", threadId=run_id, runId=run_id, toolCallId=call_id, args=args_summary))
+    def emit_tool_call(
+        self,
+        run_id: str,
+        tool_name: str,
+        args_summary: dict[str, Any] | None = None,
+        result_summary: dict[str, Any] | str | None = None,
+        *,
+        tool_call_id: str | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> None:
+        call_id = tool_call_id or f"tool-{int(time.time() * 1000)}"
+        payload_args = args if args is not None else (args_summary or {})
+        self.publish(
+            run_id,
+            agui_event("TOOL_CALL_START", threadId=run_id, runId=run_id, toolCallId=call_id, toolName=tool_name),
+        )
+        self.publish(
+            run_id,
+            agui_event("TOOL_CALL_ARGS", threadId=run_id, runId=run_id, toolCallId=call_id, args=payload_args),
+        )
         if result_summary is not None:
-            self.publish(run_id, agui_event("TOOL_CALL_RESULT", threadId=run_id, runId=run_id, toolCallId=call_id, result=result_summary))
-        self.publish(run_id, agui_event("TOOL_CALL_END", threadId=run_id, runId=run_id, toolCallId=call_id))
+            self.emit_tool_result(run_id, tool_call_id=call_id, result_summary=result_summary)
+
+    def emit_tool_result(
+        self,
+        run_id: str,
+        tool_call_id: str,
+        result_summary: dict[str, Any] | str,
+    ) -> None:
+        self.publish(
+            run_id,
+            agui_event("TOOL_CALL_RESULT", threadId=run_id, runId=run_id, toolCallId=tool_call_id, result=result_summary),
+        )
+        self.publish(
+            run_id,
+            agui_event("TOOL_CALL_END", threadId=run_id, runId=run_id, toolCallId=tool_call_id),
+        )
 
     async def subscribe(self, run_id: str, cursor: str | None = None) -> AsyncIterator[str]:
         # Capture the running loop so off-thread publishers can bridge onto it.

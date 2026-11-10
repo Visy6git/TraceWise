@@ -1,13 +1,8 @@
-# UI component extraction boundary
+# TraceWise UI Components
 
-`App.tsx` currently contains the complete interactive prototype and colocated view components so the starter can be explored immediately. During the next frontend pass, extract the named components without changing the UX/API contract:
+Extracted workspace components backing `src/App.tsx`:
 
-- `Shell/TopBar`, `Shell/LeftRail`, `Shell/WorkspaceFooter`
-- `Run/StageRail`, `Run/StageControl`, `Run/MetricStrip`
-- `Document/SectionTree`, `Document/ReportViewer`
-- `Activity/Timeline`, `Activity/AgentCards`, `Activity/ToolActivity`
-- `Claims/ClaimRegister`, `Claims/ClaimInspector`, `Claims/ClaimEditor`, `Claims/LineageView`
-- `Sources/SourceInventory`, `Sources/SourceDrawer`, `Sources/UploadModal`
-- `Artifacts/ArtifactExplorer`, `Review/ReviewGateModal`
-
-All controls should remain keyboard accessible, expose labels, and use the AG-UI state projection rather than creating an independent ad hoc event model.
+- `ArtifactViewerModal.tsx`: Modal inspector for generated `.py`, `.md`, `master_source_summary.md`, and `result.json` artifacts.
+- `ClaimInspector.tsx`: Hierarchical claim viewer showing parent claim, nested children claims (`verified`/`mismatch`/`empty`), search criteria, mapped sources, evidence hints, and verification result shortcuts.
+- `SourceDrawer.tsx`: Slide-out source file inspector displaying SHA-256 integrity, Stage 1 per-file Markdown summary, and linked claim pills.
+- `Modals.tsx`: Stage review gate (`ReviewModal`), versioned `ClaimEditor`, and runtime-aware `UploadModal`.

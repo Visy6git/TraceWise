@@ -1,8 +1,4 @@
-"""Durable local database repository backed by SQLite.
-
-Provides atomic transitions, compare-and-swap concurrency checks,
-Claim Registry persistence, artifact manifests, and append-only audit logging.
-"""
+"""Durable local database repository backed by SQLite with schema auto-migration."""
 from __future__ import annotations
 
 import json
@@ -12,32 +8,58 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.control_plane.run_state import RunState, validate_stage_start, validate_transition
 from app.control_plane.approvals import ApprovalRequest, validate_approval
+from app.control_plane.run_state import RunState, validate_transition
+
+
+class _ClosingConnection:
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def __enter__(self) -> sqlite3.Connection:
+        self._conn.__enter__()
+        return self._conn
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        try:
+            return self._conn.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._conn.close()
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._conn, item)
+
+
+def _dump_json(val: Any, default: Any = None) -> str:
+    if val is None:
+        return json.dumps(default) if default is not None else "null"
+    if isinstance(val, (dict, list)):
+        return json.dumps(val)
+    if hasattr(val, "model_dump"):
+        return json.dumps(val.model_dump(mode="json"))
+    return json.dumps(val)
 
 
 class Database:
     def __init__(self, db_path: str | Path | None = None):
         if db_path is None:
             url = os.environ.get("DATABASE_URL", "sqlite:///./tracewise-local.db")
-            if url.startswith("sqlite:///"):
-                db_path = url[len("sqlite:///"):]
-            else:
-                db_path = "./tracewise-local.db"
+            db_path = url[len("sqlite:///") :] if url.startswith("sqlite:///") else "./tracewise-local.db"
         self.db_path = Path(db_path).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def get_connection(self) -> sqlite3.Connection:
+    def get_connection(self) -> Any:
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
-        return conn
+        return _ClosingConnection(conn)
 
     def _init_schema(self) -> None:
         with self.get_connection() as conn:
-            conn.executescript("""
+            conn.executescript(
+                """
             CREATE TABLE IF NOT EXISTS runs (
                 run_id TEXT PRIMARY KEY,
                 tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -63,6 +85,11 @@ class Database:
                 run_id TEXT NOT NULL,
                 section_id TEXT NOT NULL,
                 section_number TEXT NOT NULL,
+                section_title TEXT DEFAULT '',
+                parent_claim TEXT,
+                children_claims TEXT DEFAULT '[]',
+                search_criteria TEXT DEFAULT '',
+                source_document_mapped TEXT DEFAULT '[]',
                 raw_statement TEXT NOT NULL,
                 normalized_statement TEXT NOT NULL,
                 claim_type TEXT NOT NULL,
@@ -77,6 +104,7 @@ class Database:
                 target_locator TEXT,
                 evidence_hint TEXT,
                 derivation TEXT,
+                verification_result TEXT,
                 status TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
@@ -151,10 +179,25 @@ class Database:
                 PRIMARY KEY (run_id, claim_id),
                 FOREIGN KEY (run_id) REFERENCES runs (run_id) ON DELETE CASCADE
             );
-            """)
+            """
+            )
+            # Migrate older `claims` tables missing hierarchical columns
+            existing_cols = {
+                row["name"] for row in conn.execute("PRAGMA table_info(claims)").fetchall()
+            }
+            migrations = {
+                "section_title": "TEXT DEFAULT ''",
+                "parent_claim": "TEXT",
+                "children_claims": "TEXT DEFAULT '[]'",
+                "search_criteria": "TEXT DEFAULT ''",
+                "source_document_mapped": "TEXT DEFAULT '[]'",
+                "verification_result": "TEXT",
+            }
+            for col_name, col_def in migrations.items():
+                if col_name not in existing_cols:
+                    conn.execute(f"ALTER TABLE claims ADD COLUMN {col_name} {col_def}")
 
 
-# Global Database instance
 default_db = Database()
 
 
@@ -203,7 +246,7 @@ class RunRepository:
                     now,
                 ),
             )
-        return self.get_run(run_id)
+        return self.get_run(run_id)  # type: ignore[return-value]
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self.db.get_connection() as conn:
@@ -217,12 +260,12 @@ class RunRepository:
     def list_runs(self) -> list[dict[str, Any]]:
         with self.db.get_connection() as conn:
             rows = conn.execute("SELECT * FROM runs ORDER BY created_at DESC").fetchall()
-            result = []
+            out = []
             for r in rows:
                 d = dict(r)
                 d["source_object_ids"] = json.loads(d["source_object_ids"] or "[]")
-                result.append(d)
-            return result
+                out.append(d)
+            return out
 
     def transition(
         self,
@@ -237,18 +280,13 @@ class RunRepository:
             row = conn.execute("SELECT status, version FROM runs WHERE run_id = ?", (run_id,)).fetchone()
             if not row:
                 raise ValueError(f"Run {run_id} not found")
-
             current_state = RunState(row["status"])
             current_version = row["version"]
-
             if current_version != expected_version:
                 raise ValueError(
-                    f"Concurrency conflict: expected version {expected_version}, but database has {current_version}"
+                    f"Concurrency conflict: expected version {expected_version}, got {current_version}"
                 )
-
-            # Validate state machine invariants
             validate_transition(current_state, new_state)
-
             conn.execute(
                 """
                 UPDATE runs
@@ -257,8 +295,6 @@ class RunRepository:
                 """,
                 (new_state.value, active_stage, now, run_id, expected_version),
             )
-
-            # Append audit event
             conn.execute(
                 """
                 INSERT INTO audit_events (run_id, actor_type, actor_id, action, object_type, object_id, details, created_at)
@@ -271,14 +307,28 @@ class RunRepository:
                     now,
                 ),
             )
-
-        return self.get_run(run_id)
+        return self.get_run(run_id)  # type: ignore[return-value]
 
     def set_manifest_hash(self, run_id: str, stage: str, manifest_hash: str) -> None:
         col = f"stage_{1 if stage == 'claims' else (2 if stage == 'rules' else 3)}_manifest_hash"
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with self.db.get_connection() as conn:
             conn.execute(f"UPDATE runs SET {col} = ?, updated_at = ? WHERE run_id = ?", (manifest_hash, now, run_id))
+
+    def get_latest_rework_stage(self, run_id: str) -> str | None:
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT stage, decision FROM approvals
+                WHERE run_id = ?
+                ORDER BY approval_id DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            if row and row["decision"] == "request_changes":
+                return str(row["stage"])
+            return None
 
     def record_approval(
         self,
@@ -295,7 +345,8 @@ class RunRepository:
         if not run:
             raise ValueError(f"Run {run_id} not found")
 
-        current_manifest_hash = run.get(f"stage_{1 if stage == 'claims' else (2 if stage == 'rules' else 3)}_manifest_hash") or ""
+        col_key = f"stage_{1 if stage == 'claims' else (2 if stage == 'rules' else 3)}_manifest_hash"
+        current_manifest_hash = run.get(col_key) or ""
         approval_req = ApprovalRequest(
             reviewer_id=reviewer_id,
             decision=decision,
@@ -314,11 +365,19 @@ class RunRepository:
                 INSERT INTO approvals (run_id, stage, decision, reviewer_id, reviewer_role, expected_version, manifest_hash, note, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, stage, decision, reviewer_id, reviewer_role, expected_version, expected_manifest_hash, reviewer_note, now),
+                (
+                    run_id,
+                    stage,
+                    decision,
+                    reviewer_id,
+                    reviewer_role,
+                    expected_version,
+                    expected_manifest_hash,
+                    reviewer_note,
+                    now,
+                ),
             )
 
-        # Apply transition
-        current_state = RunState(run["status"])
         if decision == "approve":
             target_map = {
                 "claims": RunState.CLAIMS_APPROVED,
@@ -336,25 +395,53 @@ class ClaimRepository:
     def __init__(self, db: Database | None = None):
         self.db = db or default_db
 
+    def delete_claims_for_run(self, run_id: str) -> None:
+        with self.db.get_connection() as conn:
+            conn.execute("DELETE FROM claims WHERE run_id = ?", (run_id,))
+
     def save_claim(self, run_id: str, claim_data: dict[str, Any]) -> dict[str, Any]:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         claim_id = claim_data["claim_id"]
+        parent_obj = claim_data.get("parent_claim") or {
+            "raw_statement": claim_data.get("raw_statement", ""),
+            "normalized_statement": claim_data.get("normalized_statement", ""),
+            "claim_type": claim_data.get("claim_type", "other"),
+            "entity_unit": claim_data.get("entity_unit") or "cases",
+            "reported_value": claim_data.get("reported_value"),
+            "unit": claim_data.get("unit"),
+            "numerator": claim_data.get("numerator"),
+            "denominator": claim_data.get("denominator"),
+            "target_locator": claim_data.get("target_locator") or {},
+        }
+        children_obj = claim_data.get("children_claims") or []
+        source_mapped = claim_data.get("source_document_mapped") or []
 
         with self.db.get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO claims (
-                    claim_id, run_id, section_id, section_number, raw_statement,
-                    normalized_statement, claim_type, entity_unit, reported_value,
-                    unit, numerator, denominator, reporting_period, population,
-                    subgroup, target_locator, evidence_hint, derivation, status,
+                    claim_id, run_id, section_id, section_number, section_title,
+                    parent_claim, children_claims, search_criteria, source_document_mapped,
+                    raw_statement, normalized_statement, claim_type, entity_unit,
+                    reported_value, unit, numerator, denominator,
+                    reporting_period, population, subgroup, target_locator,
+                    evidence_hint, derivation, verification_result, status,
                     version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id, claim_id) DO UPDATE SET
+                    section_title = excluded.section_title,
+                    parent_claim = excluded.parent_claim,
+                    children_claims = excluded.children_claims,
+                    search_criteria = excluded.search_criteria,
+                    source_document_mapped = excluded.source_document_mapped,
+                    raw_statement = excluded.raw_statement,
                     normalized_statement = excluded.normalized_statement,
                     reported_value = excluded.reported_value,
+                    entity_unit = excluded.entity_unit,
+                    unit = excluded.unit,
                     evidence_hint = excluded.evidence_hint,
                     derivation = excluded.derivation,
+                    verification_result = excluded.verification_result,
                     status = excluded.status,
                     version = claims.version + 1,
                     updated_at = excluded.updated_at
@@ -364,46 +451,51 @@ class ClaimRepository:
                     run_id,
                     claim_data.get("section_id", ""),
                     claim_data.get("section_number", ""),
+                    claim_data.get("section_title", ""),
+                    _dump_json(parent_obj, {}),
+                    _dump_json(children_obj, []),
+                    claim_data.get("search_criteria", ""),
+                    _dump_json(source_mapped, []),
                     claim_data.get("raw_statement", ""),
                     claim_data.get("normalized_statement", ""),
                     claim_data.get("claim_type", "other"),
                     claim_data.get("entity_unit"),
-                    str(claim_data.get("reported_value", "")) if claim_data.get("reported_value") is not None else None,
+                    str(claim_data.get("reported_value")) if claim_data.get("reported_value") is not None else None,
                     claim_data.get("unit"),
                     claim_data.get("numerator"),
                     claim_data.get("denominator"),
-                    json.dumps(claim_data.get("reporting_period", {}) if isinstance(claim_data.get("reporting_period"), dict) else claim_data.get("reporting_period", {}).model_dump() if hasattr(claim_data.get("reporting_period"), "model_dump") else {}),
-                    json.dumps(claim_data.get("population", {}) if isinstance(claim_data.get("population"), dict) else claim_data.get("population", {}).model_dump() if hasattr(claim_data.get("population"), "model_dump") else {}),
-                    json.dumps(claim_data.get("subgroup", {}) if isinstance(claim_data.get("subgroup"), dict) else claim_data.get("subgroup", {}).model_dump() if hasattr(claim_data.get("subgroup"), "model_dump") else None),
-                    json.dumps(claim_data.get("target_locator", {}) if isinstance(claim_data.get("target_locator"), dict) else claim_data.get("target_locator", {}).model_dump() if hasattr(claim_data.get("target_locator"), "model_dump") else {}),
-                    json.dumps(claim_data.get("evidence_hint", {}) if isinstance(claim_data.get("evidence_hint"), dict) else claim_data.get("evidence_hint", {}).model_dump() if hasattr(claim_data.get("evidence_hint"), "model_dump") else {}),
-                    json.dumps(claim_data.get("derivation", {}) if isinstance(claim_data.get("derivation"), dict) else claim_data.get("derivation", {}).model_dump() if hasattr(claim_data.get("derivation"), "model_dump") else None),
+                    _dump_json(claim_data.get("reporting_period"), {}),
+                    _dump_json(claim_data.get("population"), {}),
+                    _dump_json(claim_data.get("subgroup"), None),
+                    _dump_json(claim_data.get("target_locator"), {}),
+                    _dump_json(claim_data.get("evidence_hint"), {}),
+                    _dump_json(claim_data.get("derivation"), None),
+                    _dump_json(claim_data.get("verification_result"), None),
                     claim_data.get("status", "draft"),
                     claim_data.get("version", 1),
                     now,
                     now,
                 ),
             )
-
-        return self.get_claim(run_id, claim_id)
+        return self.get_claim(run_id, claim_id)  # type: ignore[return-value]
 
     def get_claim(self, run_id: str, claim_id: str) -> dict[str, Any] | None:
         with self.db.get_connection() as conn:
-            row = conn.execute("SELECT * FROM claims WHERE run_id = ? AND claim_id = ?", (run_id, claim_id)).fetchone()
-            if not row:
-                return None
-            return self._row_to_claim(row)
+            row = conn.execute(
+                "SELECT * FROM claims WHERE run_id = ? AND claim_id = ?", (run_id, claim_id)
+            ).fetchone()
+            return self._row_to_claim(row) if row else None
 
     def list_claims(self, run_id: str, section_id: str | None = None) -> list[dict[str, Any]]:
         with self.db.get_connection() as conn:
             if section_id:
                 rows = conn.execute(
-                    "SELECT * FROM claims WHERE run_id = ? AND section_id = ? ORDER BY section_number, claim_id",
+                    "SELECT * FROM claims WHERE run_id = ? AND section_id = ? ORDER BY claim_id",
                     (run_id, section_id),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM claims WHERE run_id = ? ORDER BY section_number, claim_id",
+                    "SELECT * FROM claims WHERE run_id = ? ORDER BY claim_id",
                     (run_id,),
                 ).fetchall()
             return [self._row_to_claim(r) for r in rows]
@@ -422,36 +514,56 @@ class ClaimRepository:
             raise ValueError(f"Claim {claim_id} not found")
         if claim["version"] != expected_version:
             raise ValueError(
-                f"Optimistic concurrency error: expected claim version {expected_version}, actual is {claim['version']}"
+                f"Optimistic concurrency error: expected claim version {expected_version}, got {claim['version']}"
             )
 
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        # Merge patch fields
-        for k in ("raw_statement", "normalized_statement", "reported_value", "entity_unit", "unit"):
+        for k in (
+            "raw_statement",
+            "normalized_statement",
+            "reported_value",
+            "entity_unit",
+            "unit",
+            "search_criteria",
+            "source_document_mapped",
+            "children_claims",
+        ):
             if k in patch and patch[k] is not None:
                 claim[k] = patch[k]
+
+        # Keep parent_claim synchronized with patched scalar fields
+        parent_claim = claim.get("parent_claim") or {}
+        if isinstance(parent_claim, dict):
+            for k in ("raw_statement", "normalized_statement", "reported_value", "entity_unit", "unit"):
+                if k in patch and patch[k] is not None:
+                    parent_claim[k] = patch[k]
 
         with self.db.get_connection() as conn:
             conn.execute(
                 """
                 UPDATE claims
                 SET raw_statement = ?, normalized_statement = ?, reported_value = ?,
-                    entity_unit = ?, unit = ?, version = version + 1, updated_at = ?
+                    entity_unit = ?, unit = ?, search_criteria = ?,
+                    source_document_mapped = ?, children_claims = ?, parent_claim = ?,
+                    version = version + 1, updated_at = ?
                 WHERE run_id = ? AND claim_id = ? AND version = ?
                 """,
                 (
                     claim.get("raw_statement"),
                     claim.get("normalized_statement"),
-                    str(claim.get("reported_value", "")) if claim.get("reported_value") is not None else None,
+                    str(claim.get("reported_value")) if claim.get("reported_value") is not None else None,
                     claim.get("entity_unit"),
                     claim.get("unit"),
+                    claim.get("search_criteria", ""),
+                    _dump_json(claim.get("source_document_mapped"), []),
+                    _dump_json(claim.get("children_claims"), []),
+                    _dump_json(parent_claim, {}),
                     now,
                     run_id,
                     claim_id,
                     expected_version,
                 ),
             )
-            # Record change history
             conn.execute(
                 """
                 INSERT INTO claim_history (run_id, claim_id, version, patch, actor_id, reason, created_at)
@@ -459,17 +571,33 @@ class ClaimRepository:
                 """,
                 (run_id, claim_id, expected_version + 1, json.dumps(patch), actor_id, reviewer_reason, now),
             )
-
-        return self.get_claim(run_id, claim_id)
+        return self.get_claim(run_id, claim_id)  # type: ignore[return-value]
 
     def _row_to_claim(self, row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        for json_field in ("reporting_period", "population", "subgroup", "target_locator", "evidence_hint", "derivation"):
-            if d.get(json_field):
+        json_fields = (
+            "parent_claim",
+            "children_claims",
+            "source_document_mapped",
+            "reporting_period",
+            "population",
+            "subgroup",
+            "target_locator",
+            "evidence_hint",
+            "derivation",
+            "verification_result",
+        )
+        for jf in json_fields:
+            raw = d.get(jf)
+            if isinstance(raw, str):
                 try:
-                    d[json_field] = json.loads(d[json_field])
-                except Exception:
+                    d[jf] = json.loads(raw)
+                except json.JSONDecodeError:
                     pass
+        if d.get("children_claims") is None:
+            d["children_claims"] = []
+        if d.get("source_document_mapped") is None:
+            d["source_document_mapped"] = []
         return d
 
 
@@ -507,6 +635,14 @@ class ArtifactRepository:
                 ),
             )
         return artifact_data
+
+    def get_artifact(self, run_id: str, artifact_id: str) -> dict[str, Any] | None:
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM artifacts WHERE run_id = ? AND artifact_id = ?",
+                (run_id, artifact_id),
+            ).fetchone()
+            return dict(row) if row else None
 
     def list_artifacts(
         self, run_id: str, stage: str | None = None, claim_id: str | None = None
@@ -550,9 +686,9 @@ class EvaluationRepository:
                 (
                     claim_id,
                     run_id,
-                    eval_data.get("status", "UNRESOLVED"),
-                    str(eval_data.get("independent_result", "")) if eval_data.get("independent_result") is not None else None,
-                    str(eval_data.get("report_value", "")) if eval_data.get("report_value") is not None else None,
+                    eval_data.get("status", "PLACEHOLDER"),
+                    str(eval_data.get("independent_result")) if eval_data.get("independent_result") is not None else None,
+                    str(eval_data.get("report_value")) if eval_data.get("report_value") is not None else None,
                     eval_data.get("discrepancy_category"),
                     1 if eval_data.get("reviewer_required") else 0,
                     json.dumps(eval_data),
@@ -569,10 +705,10 @@ class EvaluationRepository:
                 if d.get("payload"):
                     try:
                         res.append(json.loads(d["payload"]))
-                    except Exception:
-                        res.append(d)
-                else:
-                    res.append(d)
+                        continue
+                    except json.JSONDecodeError:
+                        pass
+                res.append(d)
             return res
 
 

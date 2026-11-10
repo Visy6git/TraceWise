@@ -1,6 +1,25 @@
 export type StageId = 'claims' | 'rules' | 'evaluation';
-export type StageStatus = 'locked' | 'ready' | 'running' | 'review' | 'approved' | 'changes_requested' | 'complete' | 'error';
-export type ClaimStatus = 'draft' | 'hinted' | 'in_progress' | 'artifact_ready' | 'pass' | 'discrepancy' | 'needs_review' | 'unresolved';
+export type StageStatus =
+  | 'locked'
+  | 'ready'
+  | 'running'
+  | 'review'
+  | 'approved'
+  | 'changes_requested'
+  | 'complete'
+  | 'error'
+  | 'placeholder';
+export type ClaimStatus =
+  | 'draft'
+  | 'hinted'
+  | 'in_progress'
+  | 'verified'
+  | 'artifact_ready'
+  | 'pass'
+  | 'discrepancy'
+  | 'failed'
+  | 'needs_review'
+  | 'unresolved';
 export type EvaluationStatus = 'PASS' | 'DISCREPANCY' | 'FAIL' | 'INCONCLUSIVE' | 'NEEDS_HUMAN_REVIEW' | 'UNRESOLVED';
 export type ConfidenceSource = 'observed' | 'inferred' | 'unknown';
 
@@ -34,6 +53,35 @@ export interface EvidenceHint {
   unknowns: string[];
 }
 
+export interface ChildClaim {
+  child_claim_id: string;
+  raw_statement: string;
+  normalized_statement: string;
+  claim_type: string;
+  entity_unit: string;
+  reported_value: string | number;
+  unit?: string | null;
+  numerator?: string | null;
+  denominator?: string | null;
+  relationship: string;
+  search_criteria?: string | null;
+  verified?: boolean | null;
+  computed_value?: string | number | null;
+  verification_notes?: string | null;
+}
+
+export interface VerificationResult {
+  verified: boolean;
+  status: string;
+  parent_computed_value?: string | number | null;
+  parent_reported_value?: string | number | null;
+  children_results?: Array<Record<string, unknown>>;
+  discrepancy_summary?: string | null;
+  script_path?: string | null;
+  result_artifact_id?: string | null;
+  verified_at?: string | null;
+}
+
 export interface Claim {
   id: string;
   sectionId: string;
@@ -43,8 +91,14 @@ export interface Claim {
   reportedValue: string;
   unit: string;
   entity: string;
+  numerator?: string;
+  denominator?: string;
   status: ClaimStatus;
   hint: EvidenceHint;
+  childrenClaims: ChildClaim[];
+  searchCriteria?: string;
+  sourceDocumentMapped?: string[];
+  verificationResult?: VerificationResult | null;
   sourceIds: string[];
   result?: string;
   evaluator?: EvaluationStatus;
@@ -111,6 +165,14 @@ export interface StageInfo {
   agents: number;
   subagents: number;
   artifacts: number;
+  placeholder?: boolean;
+}
+
+export interface RuntimeConfig {
+  mode: string;
+  llm_provider: string;
+  model_id: string;
+  stage_3_placeholder: boolean;
 }
 
 export interface RunSnapshot {

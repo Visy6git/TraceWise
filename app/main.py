@@ -1,20 +1,25 @@
 """TraceWise API application."""
+from __future__ import annotations
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import artifacts, claims, evaluation, events, review, runs, sections, sources, stages
-from app.config import BEDROCK_ENABLED, MOCK_RUNS_ENABLED
+from app.config import (
+    BEDROCK_ENABLED,
+    BEDROCK_MODEL_ID,
+    LMSTUDIO_ENABLED,
+    LMSTUDIO_MODEL_ID,
+    MOCK_RUNS_ENABLED,
+    get_active_llm_provider,
+)
 
 app = FastAPI(
     title="TraceWise API",
-    version="0.1.0",
-    description="Reviewer-gated PBRER evidence reconciliation prototype.",
+    version="0.2.0",
+    description="Three-stage PBRER evidence extraction and Python rule verification pipeline.",
 )
 
-# Local development only. Replace with explicit deployment origins before exposure.
-# Allow the Vite dev server on either host (localhost / 127.0.0.1) and any port,
-# so the browser does not block requests with a "Failed to fetch" CORS error when
-# Vite picks a different port or host.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -35,11 +40,26 @@ app.include_router(events.router, prefix="/api")
 app.include_router(review.router, prefix="/api")
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
+def _runtime_summary() -> dict[str, object]:
+    active_provider = get_active_llm_provider()
+    active_model = LMSTUDIO_MODEL_ID if active_provider in {"lmstudio", "openai"} else BEDROCK_MODEL_ID
     return {
         "status": "ok",
         "service": "tracewise-api",
         "mode": "mock" if MOCK_RUNS_ENABLED else "live",
+        "llm_provider": active_provider,
         "bedrock": "enabled" if BEDROCK_ENABLED else "disabled",
+        "lmstudio": "enabled" if (LMSTUDIO_ENABLED or active_provider in {"lmstudio", "openai"}) else "disabled",
+        "model_id": active_model,
+        "stage_3_placeholder": True,
     }
+
+
+@app.get("/health")
+def health() -> dict[str, object]:
+    return _runtime_summary()
+
+
+@app.get("/api/config")
+def get_config() -> dict[str, object]:
+    return _runtime_summary()

@@ -1,4 +1,4 @@
-import type { DocumentBlock, StageId } from '../types/domain';
+import type { DocumentBlock, RuntimeConfig, StageId } from '../types/domain';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -28,26 +28,58 @@ export interface RunSummary {
   stage_3_manifest_hash?: string | null;
 }
 
-/** API client used when live mode is selected. */
+export interface ArtifactContentResponse {
+  artifact_id: string;
+  run_id: string;
+  stage: string;
+  claim_id?: string | null;
+  logical_path: string;
+  media_type: string;
+  size_bytes: number;
+  sha256: string;
+  content: string;
+}
+
+/** API client communicating with the FastAPI backend. */
 export const api = {
+  getConfig: () => request<RuntimeConfig>('/api/config'),
   createRun: (body: FormData) => request<RunSummary>('/api/runs/upload', { method: 'POST', body }),
   getRun: (runId: string) => request<RunSummary>(`/api/runs/${encodeURIComponent(runId)}`),
   listClaims: (runId: string) => request<Record<string, unknown>[]>(`/api/runs/${encodeURIComponent(runId)}/stage-1/claims`),
   getSections: (runId: string) => request<Record<string, unknown>[]>(`/api/runs/${encodeURIComponent(runId)}/sections`),
   listSources: (runId: string) => request<Record<string, unknown>[]>(`/api/runs/${encodeURIComponent(runId)}/sources`),
+  getSourceKnowledge: (runId: string) => request<Record<string, unknown>>(`/api/runs/${encodeURIComponent(runId)}/stage-1/source-knowledge`),
+  getMasterSummary: (runId: string) =>
+    request<{ run_id: string; logical_path: string; content: string }>(`/api/runs/${encodeURIComponent(runId)}/stage-1/master-summary`),
+  getSourceSummary: (runId: string, sourceId: string) =>
+    request<{ run_id: string; source_id: string; filename: string; logical_path: string; content: string }>(
+      `/api/runs/${encodeURIComponent(runId)}/stage-1/sources/${encodeURIComponent(sourceId)}/summary`,
+    ),
   getDocument: (runId: string) => request<{ blocks: DocumentBlock[] }>(`/api/runs/${encodeURIComponent(runId)}/document`),
   listArtifacts: (runId: string) => request<Record<string, unknown>[]>(`/api/runs/${encodeURIComponent(runId)}/artifacts`),
+  getArtifactContent: (runId: string, artifactId: string) =>
+    request<ArtifactContentResponse>(`/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/content`),
+  getEvaluationStatus: (runId: string) =>
+    request<{ run_id: string; status: string; is_placeholder: boolean; message: string }>(
+      `/api/runs/${encodeURIComponent(runId)}/stage-3/evaluation`,
+    ),
   startStage: (runId: string, stage: StageId, expectedInputManifestHash: string, idempotencyKey: string) =>
-    request(`/api/runs/${encodeURIComponent(runId)}/stages/${stage}/start`, {
-      method: 'POST', body: JSON.stringify({ expected_input_manifest_hash: expectedInputManifestHash, idempotency_key: idempotencyKey }),
-    }),
+    request<{ run_id: string; stage: StageId; status: string; accepted: boolean; message: string }>(
+      `/api/runs/${encodeURIComponent(runId)}/stages/${stage}/start`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ expected_input_manifest_hash: expectedInputManifestHash, idempotency_key: idempotencyKey }),
+      },
+    ),
   reviewStage: (runId: string, stage: StageId, decision: 'approve' | 'request_changes', expectedManifestHash: string, reviewerNote?: string) =>
     request(`/api/runs/${encodeURIComponent(runId)}/stages/${stage}/review`, {
-      method: 'POST', body: JSON.stringify({ decision, expected_manifest_hash: expectedManifestHash, reviewer_note: reviewerNote }),
+      method: 'POST',
+      body: JSON.stringify({ decision, expected_manifest_hash: expectedManifestHash, reviewer_note: reviewerNote }),
     }),
   updateClaim: (runId: string, claimId: string, body: Record<string, unknown>) =>
     request(`/api/runs/${encodeURIComponent(runId)}/stage-1/claims/${encodeURIComponent(claimId)}`, {
-      method: 'PATCH', body: JSON.stringify(body),
+      method: 'PATCH',
+      body: JSON.stringify(body),
     }),
 };
 

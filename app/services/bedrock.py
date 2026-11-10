@@ -8,7 +8,12 @@ import boto3
 from botocore.config import Config
 from strands.models import BedrockModel
 
-from app.config import AWS_REGION, BEDROCK_ENABLED, BEDROCK_MODEL_ID
+from app.config import (
+    AWS_REGION,
+    BEDROCK_ENABLED,
+    BEDROCK_MODEL_ID,
+    get_active_llm_provider,
+)
 
 
 def get_boto3_bedrock_client(region: str | None = None) -> Any:
@@ -24,15 +29,15 @@ def get_boto3_bedrock_client(region: str | None = None) -> Any:
     return session.client("bedrock-runtime", config=config)
 
 
-def invoke_bedrock(
+def invoke_bedrock_native(
     prompt: str,
     model_id: str | None = None,
     region: str | None = None,
     max_tokens: int = 8192,
 ) -> str:
-    """Invoke the configured Bedrock model; live-mode errors are never hidden."""
+    """Invoke the configured AWS Bedrock model natively via boto3."""
     if not BEDROCK_ENABLED:
-        raise RuntimeError("BEDROCK_ENABLED must be true to run live agent stages")
+        raise RuntimeError("BEDROCK_ENABLED must be true to run live agent stages with Bedrock")
 
     selected_model_id = model_id or BEDROCK_MODEL_ID
     client = get_boto3_bedrock_client(region)
@@ -46,6 +51,29 @@ def invoke_bedrock(
     if not text.strip():
         raise RuntimeError("Bedrock returned an empty response")
     return text
+
+
+def invoke_bedrock(
+    prompt: str,
+    model_id: str | None = None,
+    region: str | None = None,
+    max_tokens: int = 8192,
+) -> str:
+    """Invoke the active LLM backend. Routes to LM Studio when LM Studio is selected."""
+    active_provider = get_active_llm_provider()
+    if active_provider == "lmstudio":
+        from app.services.lmstudio import invoke_lmstudio
+        return invoke_lmstudio(
+            prompt=prompt,
+            model_id=model_id,
+            max_tokens=max_tokens,
+        )
+    return invoke_bedrock_native(
+        prompt=prompt,
+        model_id=model_id,
+        region=region,
+        max_tokens=max_tokens,
+    )
 
 
 def build_bedrock_model(model_id: str | None = None, region: str | None = None) -> Any:
@@ -79,4 +107,4 @@ def parse_bedrock_json(response_text: str) -> Any:
                 return value
             except json.JSONDecodeError:
                 continue
-    raise ValueError("Bedrock response did not contain valid JSON")
+    raise ValueError("LLM response did not contain valid JSON")

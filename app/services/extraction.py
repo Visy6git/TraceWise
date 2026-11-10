@@ -25,10 +25,14 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
+from app.harness.paths import strip_extended_prefix, to_extended_path
+
 # Autonumbered heading styles: "CS 1ST LEVEL autono", "CS 3rd level autono", ...
 _AUTONO_STYLE_RE = re.compile(r"\bcs\s+(\d+)(?:st|nd|rd|th)\s+level\s+autono\b", re.I)
 # Standard Word heading styles as a fallback: "Heading 1", "Heading 2", ...
 _STD_HEADING_RE = re.compile(r"^heading\s+(\d+)$", re.I)
+# Explicit section numbers written into heading text: "16.3 Evaluation of...", "16.3.1.1 Cardiac failure"
+_EXPLICIT_HEADING_NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+(.+)$")
 
 
 def _heading_level(paragraph: Paragraph) -> int | None:
@@ -76,7 +80,7 @@ def _advance_number(counters: list[int], level: int) -> str:
 
 
 def extract_target_report(file_path: str | Path) -> dict[str, Any]:
-    path = Path(file_path).resolve()
+    path = to_extended_path(strip_extended_prefix(Path(file_path)).resolve())
     if not path.exists():
         raise FileNotFoundError(f"Target document not found at {file_path}")
 
@@ -107,8 +111,26 @@ def extract_target_report(file_path: str | Path) -> dict[str, Any]:
 
             level = _heading_level(item)
             is_heading = level is not None
+            heading_title = text
+
+            number = None
             if is_heading:
-                number = _advance_number(counters, level)
+                explicit_match = _EXPLICIT_HEADING_NUM_RE.match(text)
+                if explicit_match:
+                    explicit_num = explicit_match.group(1)
+                    explicit_title = explicit_match.group(2).strip()
+                    try:
+                        num_parts = [int(p) for p in explicit_num.split(".")]
+                        while len(counters) < len(num_parts):
+                            counters.append(0)
+                        del counters[len(num_parts):]
+                        counters[:] = num_parts
+                        number = explicit_num
+                        heading_title = explicit_title or text
+                    except ValueError:
+                        pass
+                if not number:
+                    number = _advance_number(counters, level or 1)
                 current_section_num = number
                 current_section_id = f"sec_{number.replace('.', '_')}"
                 parent_id = None
@@ -117,8 +139,8 @@ def extract_target_report(file_path: str | Path) -> dict[str, Any]:
                 sections.append({
                     "section_id": current_section_id,
                     "number": number,
-                    "title": text,
-                    "level": level - 1,
+                    "title": heading_title,
+                    "level": (level - 1) if level else 0,
                     "parent_id": parent_id,
                     "is_leaf": True,
                     "extraction_status": "extracted",
@@ -238,7 +260,7 @@ def _detect_header(scan: list[tuple], max_col: int) -> tuple[int, list[str] | No
 
 
 def extract_source_file(file_path: str | Path) -> dict[str, Any]:
-    path = Path(file_path).resolve()
+    path = to_extended_path(strip_extended_prefix(Path(file_path)).resolve())
     if not path.exists():
         raise FileNotFoundError(f"Source file not found at {file_path}")
 

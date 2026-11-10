@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from pathlib import Path
 
@@ -15,9 +16,30 @@ from app.services.storage import default_storage
 router = APIRouter(tags=["runs"])
 
 
+def _resolve_sample_inputs() -> tuple[str | None, list[str]]:
+    """Locate built-in sample PBRER target & source Excel files for mock/demo runs."""
+    candidates = [
+        Path("runtime/sample_pbrer_data"),
+        Path("dataset/tenant_2"),
+        Path("dataset/tenant_1"),
+    ]
+    for folder in candidates:
+        if not folder.is_dir():
+            continue
+        docx_files = sorted(
+            p for p in folder.glob("*.docx") if not re.match(r"^[0-9a-f]{32}_", p.name)
+        ) or sorted(folder.glob("*.docx"))
+        xlsx_files = sorted(
+            p for p in folder.glob("*.xlsx") if not re.match(r"^[0-9a-f]{32}_", p.name)
+        ) or sorted(folder.glob("*.xlsx"))
+        if docx_files and xlsx_files:
+            return str(docx_files[0].resolve()), [str(p.resolve()) for p in xlsx_files]
+    return None, []
+
+
 @router.post("/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED)
 def create_run(payload: CreateRunRequest) -> RunSummary:
-    """Create a new run with immutable target report and source files."""
+    """Create a new run from local sample/path fixtures (mock mode) or existing files."""
     if not MOCK_RUNS_ENABLED:
         raise HTTPException(
             status_code=409,
@@ -28,24 +50,18 @@ def create_run(payload: CreateRunRequest) -> RunSummary:
     target_id = payload.target_object_id
     source_ids = payload.source_object_ids
 
-    if MOCK_RUNS_ENABLED and (target_id == "sample" or not Path(target_id).exists()):
-        sample_doc = Path("runtime/sample_pbrer_data/PBRER_Annual_Report_2024_Nexipril.docx").resolve()
-        if sample_doc.exists():
-            target_id = str(sample_doc)
-
-    if MOCK_RUNS_ENABLED and (
-        not source_ids or source_ids == ["sample"] or not all(Path(s).exists() for s in source_ids)
-    ):
-        sample_dir = Path("runtime/sample_pbrer_data").resolve()
-        if sample_dir.exists():
-            source_ids = [str(p) for p in sample_dir.glob("*.xlsx")]
+    if target_id == "sample" or not Path(target_id).exists() or not source_ids or source_ids == ["sample"]:
+        sample_target, sample_sources = _resolve_sample_inputs()
+        if (target_id == "sample" or not Path(target_id).exists()) and sample_target:
+            target_id = sample_target
+        if (not source_ids or source_ids == ["sample"] or not all(Path(s).exists() for s in source_ids)) and sample_sources:
+            source_ids = sample_sources
 
     if not target_id or not Path(target_id).is_file():
         raise HTTPException(status_code=400, detail="Target DOCX path does not exist")
     if not source_ids or not all(Path(source).is_file() for source in source_ids):
         raise HTTPException(status_code=400, detail="Every source path must exist")
 
-    # Calculate input manifest hash
     hasher = hashlib.sha256()
     hasher.update(Path(target_id).read_bytes())
     for s in source_ids:
@@ -57,7 +73,7 @@ def create_run(payload: CreateRunRequest) -> RunSummary:
         run_name=payload.run_name,
         target_object_id=target_id,
         source_object_ids=source_ids,
-        product_name=payload.product_name or "Nexipril Sodium",
+        product_name=payload.product_name or "PBRER Product",
         reporting_period_start=payload.reporting_period_start or "2024-01-01",
         reporting_period_end=payload.reporting_period_end or "2024-12-31",
         input_manifest_hash=input_manifest_hash,
@@ -86,13 +102,7 @@ async def upload_run(
     reporting_period_start: str | None = Form(default=None),
     reporting_period_end: str | None = Form(default=None),
 ) -> RunSummary:
-    """Create a run from actual DOCX and XLSX/CSV upload bytes."""
-    if MOCK_RUNS_ENABLED:
-        raise HTTPException(
-            status_code=409,
-            detail="Disable MOCK_RUNS_ENABLED before creating a live upload run",
-        )
-
+    """Create a run from actual DOCX and XLSX/CSV upload bytes (supported in all modes)."""
     max_bytes = MAX_UPLOAD_MB * 1024 * 1024
     upload_items = [(target_file, "target"), *((source, "source") for source in source_files)]
     staged: list[tuple[str, bytes]] = []
@@ -105,7 +115,10 @@ async def upload_run(
                 status_code=400,
                 detail=f"{role.title()} files must use one of: {', '.join(sorted(allowed))}",
             )
-        content = await upload.read(max_bytes + 1)
+        if hasattr(upload, "file") and hasattr(upload.file, "read"):
+            content = upload.file.read(max_bytes + 1)
+        else:
+            content = await upload.read(max_bytes + 1)
         if not content:
             raise HTTPException(status_code=400, detail=f"{original_name} is empty")
         if len(content) > max_bytes:

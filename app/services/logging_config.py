@@ -67,18 +67,24 @@ def get_run_logger(run_id: str, stage: str) -> logging.Logger:
     return logger
 
 
-def log_bedrock_exchange(
+def log_llm_exchange(
     logger: logging.Logger,
     label: str,
     prompt: str,
     response: str | None = None,
     error: BaseException | None = None,
+    provider: str | None = None,
 ) -> None:
-    """Record a Bedrock call. Summary at INFO; full text at DEBUG (per-run file only)."""
-    logger.info("BEDROCK %s | prompt_chars=%d", label, len(prompt))
-    logger.debug("BEDROCK %s PROMPT >>>\n%s\n<<< END PROMPT", label, prompt)
+    """Record an LLM call. Summary at INFO; full text at DEBUG (per-run file only)."""
+    from app.config import get_active_llm_provider
+    p_name = (provider or get_active_llm_provider()).upper()
+    logger.info("%s %s | prompt_chars=%d", p_name, label, len(prompt))
+    logger.debug("%s %s PROMPT >>>\n%s\n<<< END PROMPT", p_name, label, prompt)
     if response is not None:
-        logger.info("BEDROCK %s | response_chars=%d", label, len(response))
-        logger.debug("BEDROCK %s RESPONSE >>>\n%s\n<<< END RESPONSE", label, response)
+        logger.info("%s %s | response_chars=%d", p_name, label, len(response))
+        logger.debug("%s %s RESPONSE >>>\n%s\n<<< END RESPONSE", p_name, label, response)
     if error is not None:
-        logger.error("BEDROCK %s | ERROR: %s", label, error, exc_info=error)
+        logger.error("%s %s | ERROR: %s", p_name, label, error, exc_info=error)
+
+
+log_bedrock_exchange = log_llm_exchange
