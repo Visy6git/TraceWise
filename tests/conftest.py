@@ -48,6 +48,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         "app.api.runs",
         "app.api.stages",
         "app.api.review",
+        "app.api.claims",
         "app.api.sources",
         "app.stages.stage_1_claims.orchestrator",
         "app.stages.stage_2_rules.orchestrator",
@@ -67,6 +68,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     targets_storage = [
         "app.api.runs",
         "app.api.artifacts",
+        "app.api.claims",
         "app.api.sources",
         "app.api.sections",
         "app.stages.stage_1_claims.document_understanding",

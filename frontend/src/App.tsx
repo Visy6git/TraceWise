@@ -5,22 +5,25 @@ import {
   BookOpen, Bot, Check, CheckCheck, CheckCircle2, ChevronDown, ChevronRight,
   CircleDashed, Clock3, Code2, Command, File, FileCheck2, FileCode2, FileJson,
   FileSpreadsheet, FileText, Filter, FolderOpen, GitBranch, GitCommitHorizontal,
-  HardDrive, Layers3, Lock, MoreHorizontal, Network, PanelLeftClose, PanelRightClose,
-  Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Terminal,
+  HardDrive, History, Layers3, Lock, MoreHorizontal, Network, PanelLeftClose, PanelRightClose,
+  PauseCircle, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Terminal,
   Workflow, X, Zap,
 } from 'lucide-react';
 import { ArtifactViewerModal, type OpenedArtifact } from './components/ArtifactViewerModal';
+import { ClaimDataModal } from './components/ClaimDataModal';
 import { ClaimInspector } from './components/ClaimInspector';
 import { ClaimEditor, ReviewModal, UploadModal } from './components/Modals';
 import { SourceDrawer } from './components/SourceDrawer';
 import { demoRun } from './data/demo';
 import { useAguiEvents } from './lib/agui';
-import { api, apiMode } from './lib/api';
+import { api, apiMode, type RunSummary } from './lib/api';
 import type {
   ActivityItem,
   ArtifactItem,
   ChildClaim,
   Claim,
+  ClaimData,
+  ClaimSourceData,
   DocumentBlock,
   RunSnapshot,
   RuntimeConfig,
@@ -56,6 +59,7 @@ function statusLabel(status: string) {
     approved: 'Approved',
     complete: 'Complete',
     error: 'Error',
+    paused: 'Paused',
     placeholder: 'Placeholder',
     changes_requested: 'Changes requested',
     verified: 'Verified',
@@ -278,9 +282,24 @@ function mapServerStatus(
   };
   const state = stageState[summary.status];
   const isRunning = summary.status.endsWith('RUNNING');
+  // FAILED and PAUSED both record the affected stage in `active_stage`. Earlier stages
+  // stay approved; the affected stage is shown as error (resume via Rerun) or paused
+  // (resume via Resume) so it can be continued in place without restarting Stage 1.
+  const stageOrder: StageId[] = ['claims', 'rules', 'evaluation'];
+  const interruptedStatus: 'error' | 'paused' | null =
+    summary.status === 'FAILED' ? 'error' : summary.status === 'PAUSED' ? 'paused' : null;
+  const interruptedStage: StageId | null =
+    interruptedStatus ? ((summary.active_stage as StageId) || 'claims') : null;
+  const interruptedIndex = interruptedStage ? stageOrder.indexOf(interruptedStage) : -1;
   const stages = structuredClone(demoRun.stages).map(stage => {
     if (stage.id === 'evaluation') {
       return { ...stage, status: 'placeholder' as const, progress: 0, placeholder: true };
+    }
+    if (interruptedStage && interruptedStatus) {
+      const idx = stageOrder.indexOf(stage.id);
+      const st =
+        stage.id === interruptedStage ? interruptedStatus : idx < interruptedIndex ? 'approved' : 'locked';
+      return { ...stage, status: st as 'error' | 'paused' | 'approved' | 'locked', progress: st === 'approved' ? 100 : 0 };
     }
     return {
       ...stage,
@@ -292,15 +311,13 @@ function mapServerStatus(
             ? ('running' as const)
             : state?.ready === stage.id
               ? ('ready' as const)
-              : summary.status === 'FAILED' && state?.active === stage.id
-                ? ('error' as const)
-                : ('locked' as const),
+              : ('locked' as const),
       progress: state?.completed.includes(stage.id) || state?.review === stage.id ? 100 : 0,
     };
   });
   return {
     status: summary.status.replaceAll('_', ' '),
-    activeStage: state?.active || 'claims',
+    activeStage: interruptedStage || state?.active || 'claims',
     stages,
     stageManifestHashes: {
       claims: summary.stage_1_manifest_hash || undefined,
@@ -322,11 +339,20 @@ function App() {
   const [showUpload, setShowUpload] = useState(false);
   const [showClaimEditor, setShowClaimEditor] = useState(false);
   const [showReview, setShowReview] = useState(false);
+  const [claimDataView, setClaimDataView] = useState<{ claimId: string } | null>(null);
+  const [claimData, setClaimData] = useState<ClaimData | null>(null);
+  const [claimSourceData, setClaimSourceData] = useState<ClaimSourceData | null>(null);
+  const [claimDataLoading, setClaimDataLoading] = useState(false);
+  const [claimDataError, setClaimDataError] = useState<string | null>(null);
   const [showSourcePanel, setShowSourcePanel] = useState(false);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [reviewNote, setReviewNote] = useState('');
   const [showAllActivity, setShowAllActivity] = useState(false);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [leftTab, setLeftTab] = useState<'workspace' | 'history'>('workspace');
+  const [sessionHistory, setSessionHistory] = useState<RunSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [claimDraft, setClaimDraft] = useState({ statement: '', reportedValue: '', unit: '', searchCriteria: '' });
   const [notice, setNotice] = useState('');
@@ -341,10 +367,27 @@ function App() {
   const sourceInput = useRef<HTMLInputElement>(null);
   const lastRefreshRef = useRef(0);
 
+  async function loadSessionHistory() {
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      setSessionHistory(await api.listRuns());
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!apiMode) return;
     api.getConfig().then(setRuntimeConfig).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!apiMode || leftTab !== 'history') return;
+    void loadSessionHistory();
+  }, [apiMode, leftTab]);
 
   const currentStage = run.stages.find(s => s.id === run.activeStage) || run.stages[0];
   const selectedClaimData = run.claims.find(c => c.id === selectedClaim) || null;
@@ -433,6 +476,42 @@ function App() {
     });
   }
 
+  async function reopenSession(session: RunSummary) {
+    setLoadingStage(true);
+    setHistoryError('');
+    setNotice('');
+    try {
+      const summary = await api.getRun(session.run_id);
+      const mapped = mapServerStatus(summary);
+      const reopened = emptyRun();
+      reopened.runId = summary.run_id;
+      reopened.name = summary.run_name;
+      reopened.createdAt = summary.created_at;
+      reopened.product = summary.product_name || '';
+      reopened.period = [summary.reporting_period_start, summary.reporting_period_end]
+        .filter(Boolean)
+        .join(' – ');
+      reopened.targetDocument = summary.target_document_filename || 'Previously uploaded target';
+      reopened.inputManifestHash = summary.input_manifest_hash;
+      reopened.stageManifestHashes = mapped.stageManifestHashes;
+      reopened.stages = mapped.stages;
+      reopened.activeStage = mapped.activeStage;
+      reopened.status = mapped.status;
+      setRun(reopened);
+      setSelectedClaim(null);
+      setSelectedSource(null);
+      setActiveSection('');
+      setActiveTab('activity');
+      setLeftTab('workspace');
+      setShowReview(false);
+      await refreshLiveRun(summary.run_id);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingStage(false);
+    }
+  }
+
   function scheduleRefresh(runId: string, force = false) {
     if (!runId) return;
     const now = Date.now();
@@ -440,6 +519,14 @@ function App() {
       lastRefreshRef.current = now;
       void refreshLiveRun(runId).catch(() => {});
     }
+  }
+
+  async function getCurrentStageManifest(stageId: StageId) {
+    if (!run.runId) return undefined;
+    const summary = await api.getRun(run.runId);
+    const mapped = mapServerStatus(summary);
+    setRun(prev => ({ ...prev, ...mapped }));
+    return mapped.stageManifestHashes?.[stageId];
   }
 
   async function openArtifact(artifact: ArtifactItem) {
@@ -468,6 +555,35 @@ function App() {
       setNotice(err instanceof Error ? err.message : String(err));
     } finally {
       setArtifactLoading(false);
+    }
+  }
+
+  async function openClaimData(claim: Claim) {
+    setClaimDataView({ claimId: claim.id });
+    setClaimData(null);
+    setClaimSourceData(null);
+    setClaimDataError(null);
+    if (!apiMode || !run.runId) {
+      setClaimDataError('Source data is available only for live runs. Start the FastAPI backend and run Stage 2.');
+      return;
+    }
+    setClaimDataLoading(true);
+    try {
+      // Full source sheet(s) are the primary view; the agent's matched subset is supplementary.
+      const [sourceRes, matchedRes] = await Promise.allSettled([
+        api.getClaimSourceData(run.runId, claim.id),
+        api.getClaimData(run.runId, claim.id),
+      ]);
+      if (sourceRes.status === 'fulfilled') setClaimSourceData(sourceRes.value);
+      if (matchedRes.status === 'fulfilled') setClaimData(matchedRes.value);
+      if (sourceRes.status === 'rejected' && matchedRes.status === 'rejected') {
+        const reason = sourceRes.reason;
+        setClaimDataError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } catch (err) {
+      setClaimDataError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClaimDataLoading(false);
     }
   }
 
@@ -508,29 +624,115 @@ function App() {
       setNotice('Create a run with your DOCX and XLSX/CSV files first.');
       return;
     }
-    const inputHash = stageId === 'claims' ? run.inputManifestHash : run.stageManifestHashes?.claims;
-    if (!inputHash) {
-      setNotice(`The approved input manifest for ${stageLabel[stageId]} is missing.`);
-      return;
-    }
     setLoadingStage(true);
-    setRun(prev => ({
-      ...prev,
-      activeStage: stageId,
-      status: `${stageLabel[stageId]} · Running`,
-      agents: [],
-      stages: prev.stages.map(stage =>
-        stage.id === stageId ? { ...stage, status: 'running', progress: 8, subagents: 0, agents: 0 } : stage,
-      ),
-    }));
     try {
+      const summary = await api.getRun(run.runId);
+      const mapped = mapServerStatus(summary);
+      setRun(prev => ({
+        ...prev,
+        ...mapped,
+        inputManifestHash: summary.input_manifest_hash,
+      }));
+
+      if (stageId === 'rules' && summary.status !== 'CLAIMS_APPROVED') {
+        setNotice(`Stage 2 requires Stage 1 approval. Current run status: ${summary.status.replaceAll('_', ' ')}.`);
+        return;
+      }
+
+      const inputHash =
+        stageId === 'claims' ? summary.input_manifest_hash : summary.stage_1_manifest_hash;
+      if (!inputHash) {
+        setNotice(
+          `No completed Stage 1 manifest is recorded for run ${run.runId.slice(0, 8)}. Refresh the run or rerun Stage 1.`,
+        );
+        return;
+      }
+
+      setRun(prev => ({
+        ...prev,
+        activeStage: stageId,
+        status: `${stageLabel[stageId]} · Running`,
+        agents: [],
+        stages: prev.stages.map(stage =>
+          stage.id === stageId ? { ...stage, status: 'running', progress: 8, subagents: 0, agents: 0 } : stage,
+        ),
+      }));
       await api.startStage(run.runId, stageId, inputHash, crypto.randomUUID());
       setNotice(`${stageLabel[stageId]} started — streaming live harness & Strands activity.`);
     } catch (error) {
-      patchStage(stageId, { status: 'error' });
+      await refreshLiveRun(run.runId);
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       setLoadingStage(false);
+    }
+  }
+
+  async function rerunLiveStage(stageId: StageId) {
+    if (stageId === 'evaluation') {
+      setNotice('Stage 3 (Independent Evaluation & Validation) is currently left as a placeholder.');
+      return;
+    }
+    if (!run.runId) {
+      setNotice('No active run to rerun. Create or reopen a run first.');
+      return;
+    }
+    setLoadingStage(true);
+    try {
+      const summary = await api.getRun(run.runId);
+      const inputHash =
+        stageId === 'claims' ? summary.input_manifest_hash : summary.stage_1_manifest_hash;
+      if (!inputHash) {
+        setNotice(
+          `Cannot rerun ${stageLabel[stageId]} — its input manifest is missing. Rerun the previous stage first.`,
+        );
+        return;
+      }
+      setRun(prev => ({
+        ...prev,
+        activeStage: stageId,
+        status: `${stageLabel[stageId]} · Re-running`,
+        agents: [],
+        stages: prev.stages.map(stage =>
+          stage.id === stageId ? { ...stage, status: 'running', progress: 8, subagents: 0, agents: 0 } : stage,
+        ),
+      }));
+      await api.rerunStage(run.runId, stageId, inputHash, crypto.randomUUID());
+      setNotice(`${stageLabel[stageId]} re-running — streaming live harness & Strands activity.`);
+    } catch (error) {
+      await refreshLiveRun(run.runId);
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingStage(false);
+    }
+  }
+
+  function rerunStage(stageId: StageId) {
+    if (stageId === 'evaluation') {
+      setNotice('Stage 3 (Independent Evaluation & Validation) is currently left as a placeholder.');
+      return;
+    }
+    if (apiMode) {
+      void rerunLiveStage(stageId);
+      return;
+    }
+    // Demo mode: reset the stage then replay the simulation.
+    setRun(prev => ({
+      ...prev,
+      stages: prev.stages.map(s => (s.id === stageId ? { ...s, status: 'ready' } : s)),
+    }));
+    beginStage(stageId);
+  }
+
+  async function pauseStage(stageId: StageId) {
+    if (!apiMode || !run.runId) {
+      setNotice('Pausing a session is available only for live runs.');
+      return;
+    }
+    try {
+      await api.pauseStage(run.runId, stageId);
+      setNotice(`Pause requested — ${stageLabel[stageId]} will stop after the current claim. Use Resume to continue.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -636,12 +838,16 @@ function App() {
       return;
     }
     if (apiMode) {
-      const expectedManifest = run.stageManifestHashes?.[stageId];
-      if (!run.runId || !expectedManifest) {
-        setNotice('The stage manifest is unavailable; approval was not sent.');
+      if (!run.runId) {
+        setNotice('No run is selected; approval was not sent.');
         return;
       }
       try {
+        const expectedManifest = await getCurrentStageManifest(stageId);
+        if (!expectedManifest) {
+          setNotice('No completed stage manifest is recorded. If the stage was interrupted, rerun it before approval.');
+          return;
+        }
         await api.reviewStage(run.runId, stageId, 'approve', expectedManifest, reviewNote || undefined);
         const summary = await api.getRun(run.runId);
         setRun(prev => ({ ...prev, ...mapServerStatus(summary) }));
@@ -677,12 +883,16 @@ function App() {
 
   async function requestChanges(stageId: StageId) {
     if (apiMode) {
-      const expectedManifest = run.stageManifestHashes?.[stageId];
-      if (!run.runId || !expectedManifest) {
-        setNotice('The stage manifest is unavailable; review changes were not sent.');
+      if (!run.runId) {
+        setNotice('No run is selected; review changes were not sent.');
         return;
       }
       try {
+        const expectedManifest = await getCurrentStageManifest(stageId);
+        if (!expectedManifest) {
+          setNotice('No completed stage manifest is recorded. Refresh the run or rerun the interrupted stage before review.');
+          return;
+        }
         await api.reviewStage(run.runId, stageId, 'request_changes', expectedManifest, reviewNote || undefined);
         const summary = await api.getRun(run.runId);
         setRun(prev => ({ ...prev, ...mapServerStatus(summary), reviewNote }));
@@ -795,15 +1005,17 @@ function App() {
                       ? 'review'
                       : status === 'error'
                         ? 'error'
-                        : status === 'running'
-                          ? 'running'
-                          : s.status,
+                        : status === 'paused'
+                          ? 'paused'
+                          : status === 'running'
+                            ? 'running'
+                            : s.status,
                 progress: status === 'review' ? 100 : Math.max(s.progress, progress),
               }
             : s,
         ),
       }));
-      scheduleRefresh(runId, status === 'review' || status === 'error');
+      scheduleRefresh(runId, status === 'review' || status === 'error' || status === 'paused');
     } else if (event.type === 'CUSTOM' && event.name === 'tracewise.claim') {
       const value = (event.value || {}) as Record<string, unknown>;
       if (value.claim && typeof value.claim === 'object') {
@@ -966,6 +1178,75 @@ function App() {
                   <span>{run.period || 'PBRER Section 16.3'}</span>
                 </div>
               </div>
+              <div className="rail-tabs" role="tablist" aria-label="Run navigation">
+                <button
+                  className={leftTab === 'workspace' ? 'active' : ''}
+                  role="tab"
+                  aria-selected={leftTab === 'workspace'}
+                  onClick={() => setLeftTab('workspace')}
+                >
+                  <FolderOpen size={13} />Workspace
+                </button>
+                <button
+                  className={leftTab === 'history' ? 'active' : ''}
+                  role="tab"
+                  aria-selected={leftTab === 'history'}
+                  onClick={() => setLeftTab('history')}
+                >
+                  <History size={13} />History
+                </button>
+              </div>
+              {leftTab === 'history' ? (
+                <div className="session-history" role="tabpanel">
+                  <div className="rail-section-head">
+                    <span>PREVIOUS RUNS</span>
+                    <button
+                      className="mini-add"
+                      onClick={() => void loadSessionHistory()}
+                      title="Refresh session history"
+                    >
+                      <RefreshCw size={12} />
+                    </button>
+                  </div>
+                  {historyLoading ? (
+                    <div className="history-message">Loading saved runs…</div>
+                  ) : historyError ? (
+                    <div className="history-message error">{historyError}</div>
+                  ) : sessionHistory.length === 0 ? (
+                    <div className="history-message">No saved runs yet. Uploaded runs will appear here.</div>
+                  ) : (
+                    <div className="session-history-list">
+                      {sessionHistory.map(session => (
+                        <button
+                          key={session.run_id}
+                          className={cx('session-history-item', session.run_id === run.runId && 'selected')}
+                          disabled={loadingStage}
+                          onClick={() => void reopenSession(session)}
+                          title={`Reopen ${session.run_name}`}
+                        >
+                          <span className="session-history-item-top">
+                            <strong>{session.run_name}</strong>
+                            <StatusDot
+                              status={
+                                session.status.includes('AWAITING_REVIEW')
+                                  ? 'review'
+                                  : session.status.toLowerCase()
+                              }
+                            />
+                          </span>
+                          <span className="session-history-status">{statusLabel(session.status)}</span>
+                          <span className="session-history-date">
+                            {new Date(session.created_at).toLocaleString()}
+                          </span>
+                          <span className="session-history-id">{session.run_id}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {loadingStage && <div className="history-message">Reopening saved run…</div>}
+                </div>
+              ) : (
+                <>
               <div className="rail-section-head">
                 <span>DOCUMENT STRUCTURE</span>
                 <span className="tiny-count">{run.sections.length}</span>
@@ -1020,6 +1301,8 @@ function App() {
                 </div>
                 <span className="secure-tag"><Lock size={10} />LOCKED</span>
               </div>
+                </>
+              )}
             </>
           )}
         </aside>
@@ -1175,12 +1458,24 @@ function App() {
                         ? 'Start Stage 1'
                         : run.stages[0].status === 'review'
                           ? 'Review & approve'
-                          : run.stages[0].status === 'changes_requested'
-                            ? 'Run corrections'
-                            : statusLabel(run.stages[0].status)
+                          : run.stages[0].status === 'error'
+                            ? 'Rerun Stage 1'
+                            : run.stages[0].status === 'paused'
+                              ? 'Resume Stage 1'
+                              : run.stages[0].status === 'changes_requested'
+                                ? 'Run corrections'
+                                : statusLabel(run.stages[0].status)
                     }
                     actionType={run.stages[0].status === 'review' ? 'review' : 'start'}
-                    onAction={() => (run.stages[0].status === 'review' ? setShowReview(true) : beginStage('claims'))}
+                    onAction={() =>
+                      run.stages[0].status === 'review'
+                        ? setShowReview(true)
+                        : run.stages[0].status === 'error' || run.stages[0].status === 'paused'
+                          ? rerunStage('claims')
+                          : beginStage('claims')
+                    }
+                    onRerun={() => rerunStage('claims')}
+                    onPause={() => void pauseStage('claims')}
                     disabled={['locked', 'running', 'approved'].includes(run.stages[0].status)}
                   />
                   <StageControl
@@ -1193,12 +1488,24 @@ function App() {
                           ? 'Start Stage 2'
                           : run.stages[1].status === 'review'
                             ? 'Review & approve'
-                            : run.stages[1].status === 'changes_requested'
-                              ? 'Run corrections'
-                              : statusLabel(run.stages[1].status)
+                            : run.stages[1].status === 'error'
+                              ? 'Rerun Stage 2'
+                              : run.stages[1].status === 'paused'
+                                ? 'Resume Stage 2'
+                                : run.stages[1].status === 'changes_requested'
+                                  ? 'Run corrections'
+                                  : statusLabel(run.stages[1].status)
                     }
                     actionType={run.stages[1].status === 'review' ? 'review' : 'start'}
-                    onAction={() => (run.stages[1].status === 'review' ? setShowReview(true) : beginStage('rules'))}
+                    onAction={() =>
+                      run.stages[1].status === 'review'
+                        ? setShowReview(true)
+                        : run.stages[1].status === 'error' || run.stages[1].status === 'paused'
+                          ? rerunStage('rules')
+                          : beginStage('rules')
+                    }
+                    onRerun={() => rerunStage('rules')}
+                    onPause={() => void pauseStage('rules')}
                     disabled={['locked', 'running', 'approved'].includes(run.stages[1].status)}
                   />
                   <StageControl
@@ -1290,6 +1597,7 @@ function App() {
                           setActiveSection(secId);
                         }}
                         onOpenArtifact={art => void openArtifact(art)}
+                        onViewData={c => void openClaimData(c)}
                       />
                     )}
                   </>
@@ -1380,6 +1688,29 @@ function App() {
         loading={artifactLoading}
         onClose={() => setOpenedArtifact(null)}
       />
+
+      {claimDataView && (
+        <ClaimDataModal
+          claimId={claimDataView.claimId}
+          sourceData={claimSourceData}
+          data={claimData}
+          loading={claimDataLoading}
+          error={claimDataError}
+          csvUrlFor={sheet =>
+            api.claimSourceCsvUrl(
+              run.runId,
+              claimDataView.claimId,
+              sheet.source_file,
+              sheet.sheet,
+            )}
+          onClose={() => {
+            setClaimDataView(null);
+            setClaimData(null);
+            setClaimSourceData(null);
+            setClaimDataError(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1749,6 +2080,8 @@ function StageControl({
   actionLabel,
   actionType,
   onAction,
+  onRerun,
+  onPause,
   disabled,
 }: {
   stage: RunSnapshot['stages'][number];
@@ -1756,8 +2089,15 @@ function StageControl({
   actionLabel: string;
   actionType: 'start' | 'review';
   onAction: () => void;
+  onRerun?: () => void;
+  onPause?: () => void;
   disabled: boolean;
 }) {
+  // Offer a dedicated rerun when the stage awaits review (rerun instead of approving).
+  // For an errored/paused stage the primary action already reruns/resumes it.
+  const showSecondaryRerun = Boolean(onRerun) && stage.status === 'review';
+  const showPause = Boolean(onPause) && stage.status === 'running';
+  const isResumeLike = stage.status === 'error' || stage.status === 'paused';
   return (
     <div className="stage-control-row">
       <div className={`stage-control-icon ${stage.id}`}>{icon}</div>
@@ -1769,8 +2109,20 @@ function StageControl({
       <div className="control-progress">
         <span style={{ width: `${stage.progress}%` }} />
       </div>
+      {showPause && (
+        <button className="stage-action pause" onClick={onPause} title="Pause this run after the current claim">
+          <PauseCircle size={13} />
+          Pause
+        </button>
+      )}
+      {showSecondaryRerun && (
+        <button className="stage-action rerun" onClick={onRerun} title="Re-run this stage without restarting Stage 1">
+          <RotateCcw size={13} />
+          Rerun
+        </button>
+      )}
       <button
-        className={cx('stage-action', actionType, disabled && 'disabled')}
+        className={cx('stage-action', actionType, isResumeLike && 'rerun', disabled && 'disabled')}
         disabled={disabled}
         onClick={onAction}
       >
@@ -1778,6 +2130,8 @@ function StageControl({
           <ShieldCheck size={13} />
         ) : stage.status === 'running' ? (
           <CircleDashed size={13} />
+        ) : isResumeLike ? (
+          <RotateCcw size={13} />
         ) : (
           <Play size={13} />
         )}

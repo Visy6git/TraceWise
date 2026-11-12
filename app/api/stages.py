@@ -5,7 +5,13 @@ import threading
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.control_plane.run_state import RunState, validate_stage_start
+from app.control_plane.run_control import request_pause
+from app.control_plane.run_state import (
+    RunState,
+    validate_stage_pause,
+    validate_stage_rerun,
+    validate_stage_start,
+)
 from app.schemas.messages import StageName
 from app.schemas.run import StageActionResponse, StageStartRequest
 from app.services.database import default_run_repo
@@ -50,11 +56,13 @@ def _execute_stage_background(run_id: str, stage: str, manifest: str) -> None:
         cur = default_run_repo.get_run(run_id)
         if cur:
             try:
+                # Preserve which stage failed so the UI can offer a targeted rerun
+                # of just that stage instead of restarting from Stage 1.
                 default_run_repo.transition(
                     run_id=run_id,
                     expected_version=cur["version"],
                     new_state=RunState.FAILED,
-                    active_stage=None,
+                    active_stage=stage,
                 )
             except Exception:
                 logger.exception("Could not transition run %s to FAILED", run_id)
@@ -120,6 +128,106 @@ def start_stage(run_id: str, stage: StageName, payload: StageStartRequest) -> St
         status=updated_run["status"] if updated_run else _RUNNING_STATES[stage.value].value,
         accepted=True,
         message=f"{stage.value.title()} stage started. Streaming live progress over AG-UI.",
+    )
+
+
+@router.post("/runs/{run_id}/stages/{stage}/rerun", response_model=StageActionResponse)
+def rerun_stage(run_id: str, stage: StageName, payload: StageStartRequest) -> StageActionResponse:
+    """Re-run a single stage that failed or is awaiting review, without restarting Stage 1."""
+    run = default_run_repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    if stage == StageName.evaluation:
+        res = run_evaluation_stage(run_id)
+        return StageActionResponse(
+            run_id=run_id,
+            stage=stage,
+            status="placeholder",
+            accepted=False,
+            message=res["message"],
+        )
+
+    expected_manifest = (
+        run.get("input_manifest_hash")
+        if stage == StageName.claims
+        else run.get("stage_1_manifest_hash")
+    )
+    if not expected_manifest or payload.expected_input_manifest_hash != expected_manifest:
+        raise HTTPException(status_code=409, detail="Stage input manifest is missing or stale")
+
+    current_state = RunState(run["status"])
+    rework_stage = (
+        default_run_repo.get_latest_rework_stage(run_id)
+        if current_state == RunState.CHANGES_REQUESTED
+        else None
+    )
+
+    try:
+        validate_stage_rerun(
+            current_state,
+            stage.value,
+            failed_stage=run.get("active_stage"),
+            rework_stage=rework_stage,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    default_run_repo.transition(
+        run_id=run_id,
+        expected_version=run["version"],
+        new_state=_RUNNING_STATES[stage.value],
+        active_stage=stage.value,
+        rework_stage=rework_stage,
+    )
+
+    thread = threading.Thread(
+        target=_execute_stage_background,
+        args=(run_id, stage.value, payload.expected_input_manifest_hash),
+        name=f"rerun-{stage.value}-{run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+
+    updated_run = default_run_repo.get_run(run_id)
+    return StageActionResponse(
+        run_id=run_id,
+        stage=stage,
+        status=updated_run["status"] if updated_run else _RUNNING_STATES[stage.value].value,
+        accepted=True,
+        message=f"{stage.value.title()} stage re-running. Streaming live progress over AG-UI.",
+    )
+
+
+@router.post("/runs/{run_id}/stages/{stage}/pause", response_model=StageActionResponse)
+def pause_stage(run_id: str, stage: StageName) -> StageActionResponse:
+    """Request a cooperative pause of a running stage; it stops at the next safe boundary."""
+    run = default_run_repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    try:
+        validate_stage_pause(RunState(run["status"]), stage.value)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    # Cooperative: the running orchestrator observes this between claims, stops cleanly,
+    # and transitions the run to PAUSED (resume later via the rerun endpoint).
+    request_pause(run_id)
+    default_broker.emit_activity(
+        run_id=run_id,
+        stage=stage.value,
+        title=f"Pause requested for {stage.value.title()}",
+        detail="The stage will stop at the next safe boundary (after the current claim).",
+        kind="gate",
+        status="warning",
+    )
+    return StageActionResponse(
+        run_id=run_id,
+        stage=stage,
+        status=run["status"],
+        accepted=True,
+        message=f"Pause requested. {stage.value.title()} will stop after the current claim; resume with Rerun.",
     )
 
 

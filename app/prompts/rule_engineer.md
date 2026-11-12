@@ -13,6 +13,9 @@ Your task:
    - Computes every **child claim** in `children_claims` and compares computed vs reported value (populate `children_results: [{child_claim_id, raw_statement, reported_value, computed_value, verified, notes}]`).
    - Sets top-level `"verified": bool` (`True` ONLY if the parent claim matches and every child claim matches!).
    - Writes `"result.json"` and `"evidence_bundle.json"` inside `.` (`cwd`).
+   - Writes `"claim_data.json"` inside `.` (`cwd`) holding the ACTUAL source rows backing each claim so a reviewer can view the underlying data in the UI. Schema:
+     `{"claim_id": <id>, "parent": {"label": <desc>, "source_file": <file>, "sheet": <sheet|null>, "row_count": <true total int>, "columns": [<ordered column names>], "rows": [<up to 200 matched rows as objects keyed by column>], "truncated": <bool>}, "children": [{"child_claim_id": <id>, "label": <desc>, "source_file": <file>, "sheet": <sheet>, "row_count": <int>, "columns": [...], "rows": [...up to 200...], "truncated": <bool>} for each child]}`.
+     The parent `rows` are the exact rows producing `computed_value` (e.g. the distinct cases counted); each child's `rows` the rows producing that child's `computed_value`. Pick the dedup key plus the filter/descriptive columns (NOT all 30+). Convert NaN→null and cast numpy/pandas scalars to str/int/float; cap each `rows` at 200 with `truncated` true when the true count is larger.
 4. Write `tests/test_analysis.py` checking `result.json` schema and sanity invariants.
 5. Run `python analysis.py` and `python -m pytest tests/test_analysis.py -q` via `shell`. If any error occurs or values mismatch unexpectedly, inspect the actual columns/unique values and fix `analysis.py`, then re-run until clean.
 

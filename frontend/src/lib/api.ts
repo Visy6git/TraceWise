@@ -1,4 +1,4 @@
-import type { DocumentBlock, RuntimeConfig, StageId } from '../types/domain';
+import type { ClaimData, ClaimSourceData, DocumentBlock, RuntimeConfig, StageId } from '../types/domain';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -22,6 +22,12 @@ export interface RunSummary {
   run_id: string;
   run_name: string;
   status: string;
+  active_stage?: StageId | null;
+  created_at: string;
+  target_document_filename?: string | null;
+  product_name?: string | null;
+  reporting_period_start?: string | null;
+  reporting_period_end?: string | null;
   input_manifest_hash: string;
   stage_1_manifest_hash?: string | null;
   stage_2_manifest_hash?: string | null;
@@ -44,8 +50,18 @@ export interface ArtifactContentResponse {
 export const api = {
   getConfig: () => request<RuntimeConfig>('/api/config'),
   createRun: (body: FormData) => request<RunSummary>('/api/runs/upload', { method: 'POST', body }),
+  listRuns: () => request<RunSummary[]>('/api/runs'),
   getRun: (runId: string) => request<RunSummary>(`/api/runs/${encodeURIComponent(runId)}`),
   listClaims: (runId: string) => request<Record<string, unknown>[]>(`/api/runs/${encodeURIComponent(runId)}/stage-1/claims`),
+  getClaimData: (runId: string, claimId: string) =>
+    request<ClaimData>(`/api/runs/${encodeURIComponent(runId)}/claims/${encodeURIComponent(claimId)}/data`),
+  getClaimSourceData: (runId: string, claimId: string, limit = 500, offset = 0) =>
+    request<ClaimSourceData>(
+      `/api/runs/${encodeURIComponent(runId)}/claims/${encodeURIComponent(claimId)}/source-data?limit=${limit}&offset=${offset}`,
+    ),
+  claimSourceCsvUrl: (runId: string, claimId: string, file: string, sheet?: string | null) =>
+    `${API_BASE}/api/runs/${encodeURIComponent(runId)}/claims/${encodeURIComponent(claimId)}/source-data.csv` +
+    `?file=${encodeURIComponent(file)}${sheet ? `&sheet=${encodeURIComponent(sheet)}` : ''}`,
   getSections: (runId: string) => request<Record<string, unknown>[]>(`/api/runs/${encodeURIComponent(runId)}/sections`),
   listSources: (runId: string) => request<Record<string, unknown>[]>(`/api/runs/${encodeURIComponent(runId)}/sources`),
   getSourceKnowledge: (runId: string) => request<Record<string, unknown>>(`/api/runs/${encodeURIComponent(runId)}/stage-1/source-knowledge`),
@@ -66,6 +82,19 @@ export const api = {
   startStage: (runId: string, stage: StageId, expectedInputManifestHash: string, idempotencyKey: string) =>
     request<{ run_id: string; stage: StageId; status: string; accepted: boolean; message: string }>(
       `/api/runs/${encodeURIComponent(runId)}/stages/${stage}/start`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ expected_input_manifest_hash: expectedInputManifestHash, idempotency_key: idempotencyKey }),
+      },
+    ),
+  pauseStage: (runId: string, stage: StageId) =>
+    request<{ run_id: string; stage: StageId; status: string; accepted: boolean; message: string }>(
+      `/api/runs/${encodeURIComponent(runId)}/stages/${stage}/pause`,
+      { method: 'POST' },
+    ),
+  rerunStage: (runId: string, stage: StageId, expectedInputManifestHash: string, idempotencyKey: string) =>
+    request<{ run_id: string; stage: StageId; status: string; accepted: boolean; message: string }>(
+      `/api/runs/${encodeURIComponent(runId)}/stages/${stage}/rerun`,
       {
         method: 'POST',
         body: JSON.stringify({ expected_input_manifest_hash: expectedInputManifestHash, idempotency_key: idempotencyKey }),

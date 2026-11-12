@@ -22,9 +22,13 @@ def _read_bool(name: str, default: bool) -> bool:
 MOCK_RUNS_ENABLED = _read_bool("MOCK_RUNS_ENABLED", True)
 BEDROCK_ENABLED = _read_bool("BEDROCK_ENABLED", False)
 BEDROCK_MODEL_ID = os.environ.get(
-    "BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-20250514-v1:0"
+    "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-5-5"
 )
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
+# Newer Bedrock models (e.g. Claude Sonnet 5.5) reject `temperature` in the
+# Converse inferenceConfig ("`temperature` is deprecated for this model").
+# Keep it off by default; opt in only for older models that still accept it.
+BEDROCK_SEND_TEMPERATURE = _read_bool("BEDROCK_SEND_TEMPERATURE", False)
 
 LMSTUDIO_ENABLED = _read_bool("LMSTUDIO_ENABLED", False)
 LMSTUDIO_BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")

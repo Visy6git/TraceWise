@@ -21,20 +21,28 @@ class RunState(StrEnum):
     CHANGES_REQUESTED = "CHANGES_REQUESTED"
     CANCELLED = "CANCELLED"
     FAILED = "FAILED"
+    PAUSED = "PAUSED"
 
 
 ALLOWED_TRANSITIONS: dict[RunState, set[RunState]] = {
     RunState.READY_FOR_STAGE_1: {RunState.CLAIMS_RUNNING, RunState.CANCELLED},
-    RunState.CLAIMS_RUNNING: {RunState.CLAIMS_AWAITING_REVIEW, RunState.FAILED, RunState.CANCELLED},
-    RunState.CLAIMS_AWAITING_REVIEW: {RunState.CLAIMS_APPROVED, RunState.CHANGES_REQUESTED, RunState.CANCELLED},
+    # A RUNNING stage can be paused mid-flight (cooperative) and later resumed.
+    RunState.CLAIMS_RUNNING: {RunState.CLAIMS_AWAITING_REVIEW, RunState.FAILED, RunState.PAUSED, RunState.CANCELLED},
+    # AWAITING_REVIEW states may re-enter their own RUNNING state to rerun the stage.
+    RunState.CLAIMS_AWAITING_REVIEW: {RunState.CLAIMS_APPROVED, RunState.CLAIMS_RUNNING, RunState.CHANGES_REQUESTED, RunState.CANCELLED},
     RunState.CLAIMS_APPROVED: {RunState.RULES_RUNNING, RunState.CANCELLED},
-    RunState.RULES_RUNNING: {RunState.RULES_AWAITING_REVIEW, RunState.FAILED, RunState.CANCELLED},
-    RunState.RULES_AWAITING_REVIEW: {RunState.RULES_APPROVED, RunState.CHANGES_REQUESTED, RunState.CANCELLED},
+    RunState.RULES_RUNNING: {RunState.RULES_AWAITING_REVIEW, RunState.FAILED, RunState.PAUSED, RunState.CANCELLED},
+    RunState.RULES_AWAITING_REVIEW: {RunState.RULES_APPROVED, RunState.RULES_RUNNING, RunState.CHANGES_REQUESTED, RunState.CANCELLED},
     RunState.RULES_APPROVED: {RunState.EVALUATION_RUNNING, RunState.CANCELLED},
-    RunState.EVALUATION_RUNNING: {RunState.EVALUATION_AWAITING_REVIEW, RunState.FAILED, RunState.CANCELLED},
-    RunState.EVALUATION_AWAITING_REVIEW: {RunState.COMPLETE, RunState.CHANGES_REQUESTED, RunState.CANCELLED},
+    RunState.EVALUATION_RUNNING: {RunState.EVALUATION_AWAITING_REVIEW, RunState.FAILED, RunState.PAUSED, RunState.CANCELLED},
+    RunState.EVALUATION_AWAITING_REVIEW: {RunState.COMPLETE, RunState.EVALUATION_RUNNING, RunState.CHANGES_REQUESTED, RunState.CANCELLED},
     RunState.CHANGES_REQUESTED: {RunState.CLAIMS_RUNNING, RunState.RULES_RUNNING, RunState.EVALUATION_RUNNING, RunState.CANCELLED},
-    RunState.COMPLETE: set(), RunState.CANCELLED: set(), RunState.FAILED: set(),
+    # A FAILED run is recoverable: the operator may rerun the stage that failed
+    # without recreating the run or restarting from Stage 1.
+    RunState.FAILED: {RunState.CLAIMS_RUNNING, RunState.RULES_RUNNING, RunState.EVALUATION_RUNNING, RunState.CANCELLED},
+    # A PAUSED run resumes into the RUNNING state of the stage it was paused on.
+    RunState.PAUSED: {RunState.CLAIMS_RUNNING, RunState.RULES_RUNNING, RunState.EVALUATION_RUNNING, RunState.CANCELLED},
+    RunState.COMPLETE: set(), RunState.CANCELLED: set(),
 }
 
 
@@ -68,3 +76,63 @@ def validate_stage_start(state: RunState, stage: str, *, rework_stage: str | Non
         raise InvalidTransition(f"Stage {stage} requires state {required[stage].value}; current state is {state.value}")
     next_state = {"claims": RunState.CLAIMS_RUNNING, "rules": RunState.RULES_RUNNING, "evaluation": RunState.EVALUATION_RUNNING}[stage]
     validate_transition(state, next_state)
+
+
+_STAGE_RUNNING_STATE = {
+    "claims": RunState.CLAIMS_RUNNING,
+    "rules": RunState.RULES_RUNNING,
+    "evaluation": RunState.EVALUATION_RUNNING,
+}
+
+# A stage may be rerun from its own awaiting-review state, from a reviewer-requested
+# rework, after the run FAILED on that stage, or after it was PAUSED mid-run (resume).
+_RERUNNABLE_FROM = {
+    "claims": {RunState.CLAIMS_AWAITING_REVIEW, RunState.CHANGES_REQUESTED, RunState.FAILED, RunState.PAUSED},
+    "rules": {RunState.RULES_AWAITING_REVIEW, RunState.CHANGES_REQUESTED, RunState.FAILED, RunState.PAUSED},
+    "evaluation": {RunState.EVALUATION_AWAITING_REVIEW, RunState.CHANGES_REQUESTED, RunState.FAILED, RunState.PAUSED},
+}
+
+
+def validate_stage_rerun(
+    state: RunState,
+    stage: str,
+    *,
+    failed_stage: str | None = None,
+    rework_stage: str | None = None,
+) -> None:
+    """Allow re-running or resuming a single stage that failed, paused, or awaits review.
+
+    This never restarts the pipeline from an earlier stage; it only re-enters the
+    RUNNING state for the stage the caller explicitly named, and only from a state
+    where that is safe. `failed_stage`/`rework_stage` must come from durable run
+    metadata, never from arbitrary browser input.
+    """
+    if stage not in _STAGE_RUNNING_STATE:
+        raise ValueError(f"Unknown stage: {stage}")
+    if state not in _RERUNNABLE_FROM[stage]:
+        raise InvalidTransition(
+            f"Stage {stage} cannot be rerun from state {state.value}; "
+            "rerun is allowed only after the stage failed/paused or while it awaits review"
+        )
+    # For FAILED and PAUSED runs, `failed_stage` carries the stage recorded as active;
+    # only that stage can be resumed/rerun.
+    if state in {RunState.FAILED, RunState.PAUSED} and failed_stage is not None and failed_stage != stage:
+        raise InvalidTransition(
+            f"Only the stage recorded as active ({failed_stage}) can be rerun, not {stage}"
+        )
+    if state == RunState.CHANGES_REQUESTED and rework_stage != stage:
+        raise InvalidTransition(
+            "Changes requested: rerun only the exact stage explicitly reopened by the reviewer"
+        )
+    validate_transition(state, _STAGE_RUNNING_STATE[stage])
+
+
+def validate_stage_pause(state: RunState, stage: str) -> None:
+    """Allow pausing only the stage that is currently running."""
+    if stage not in _STAGE_RUNNING_STATE:
+        raise ValueError(f"Unknown stage: {stage}")
+    if state != _STAGE_RUNNING_STATE[stage]:
+        raise InvalidTransition(
+            f"Stage {stage} can only be paused while it is running; current state is {state.value}"
+        )
+    validate_transition(state, RunState.PAUSED)

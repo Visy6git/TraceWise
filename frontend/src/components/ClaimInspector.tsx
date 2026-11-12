@@ -4,6 +4,7 @@ import {
   BookOpen,
   CheckCircle2,
   Code2,
+  Database,
   FileSpreadsheet,
   GitBranch,
   Search,
@@ -20,6 +21,7 @@ export function ClaimInspector({
   onOpenSource,
   onOpenLocation,
   onOpenArtifact,
+  onViewData,
 }: {
   claim: Claim;
   sources: SourceFile[];
@@ -28,9 +30,11 @@ export function ClaimInspector({
   onOpenSource: (sourceId: string) => void;
   onOpenLocation: (sectionId: string) => void;
   onOpenArtifact: (artifact: ArtifactItem) => void;
+  onViewData: (claim: Claim) => void;
 }) {
   const vr = claim.verificationResult;
   const isVerified = claim.status === 'verified' || vr?.verified === true;
+  const hasData = vr?.data_available === true || Boolean(vr?.data_artifact_id);
   const isDiscrepancy = claim.status === 'discrepancy' || claim.status === 'failed';
   const mappedNames = claim.sourceDocumentMapped?.length ? claim.sourceDocumentMapped : claim.sourceIds;
 
@@ -177,6 +181,11 @@ export function ClaimInspector({
       </div>
 
       <div className="inspector-action-stack">
+        {hasData && (
+          <button className="button-primary full-width view-data-button" onClick={() => onViewData(claim)}>
+            <Database size={14} /> View matched source data
+          </button>
+        )}
         {(analysisArtifact || resultArtifact) && (
           <div className="inspector-artifact-links">
             {analysisArtifact && (

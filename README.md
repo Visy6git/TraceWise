@@ -25,15 +25,15 @@ TraceWise is a reviewer-gated 3-stage clinical verification platform for Periodi
 ```text
 app/
   main.py                              FastAPI app shell + /health + /api/config
-  config.py                            Environment & LLM provider config (LM Studio / Bedrock)
+  config.py                            Environment & LLM provider config (Bedrock / LM Studio)
   api/                                 Upload, runs, stages, claims, review, artifacts, sources, AG-UI SSE
   control_plane/                       Deterministic state machine, approval gates, ACL, invalidation
   harness/                             Integrated coding-agent harness (Agent, LLMClient, scoped tools, runner)
   prompts/                             stage-specific system prompts (source_explorer, claim_extractor, rule_engineer)
   schemas/                             Pydantic v2 hierarchical claim, run, source knowledge & evaluation models
-  services/                            SQLite repository, immutable storage, LM Studio Strands adapter, Bedrock, sandbox, SSE
+  services/                            SQLite repository, immutable storage, Bedrock, LM Studio Strands adapter, sandbox, SSE
   stages/
-    strands_factory.py                 Strands Agent builder (LM Studio OpenAI tools / Bedrock)
+    strands_factory.py                 Strands Agent builder (Bedrock / LM Studio OpenAI tools)
     stage_1_claims/                    Per-file harness explorer + subsection Strands claim extractor
     stage_2_rules/                     Per-claim harness verification + sandbox execution
     stage_3_evaluation/                Explicit Stage 3 placeholder
@@ -54,11 +54,19 @@ infra/                                 AWS deployment skeletons
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
 ```
 
-Configure `.env` (see `.env.example`):
-- Set `MOCK_RUNS_ENABLED=false`, `LLM_PROVIDER=lmstudio`, `LMSTUDIO_ENABLED=true`, `LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1` to run live against LM Studio (or configure `LLM_PROVIDER=bedrock` + `BEDROCK_ENABLED=true`).
+On Windows, start the API with `.\scripts\dev-api.cmd`. This limits reload watching
+to application source files so generated run artifacts and database updates do not
+restart the server during a stage. If launching Uvicorn manually, use:
+
+```powershell
+uvicorn app.main:app --reload --reload-dir app --port 8000
+```
+
+Configure `.env` (see `.env.example`) to use Bedrock via boto3:
+- Set `MOCK_RUNS_ENABLED=false`, `LLM_PROVIDER=bedrock`, `BEDROCK_ENABLED=true`, `AWS_REGION`, and `BEDROCK_MODEL_ID`.
+- Authenticate boto3 with your AWS profile, environment credentials, or an AWS task role; do not put AWS keys in `.env`.
 - Set `MOCK_RUNS_ENABLED=true` to run end-to-end with deterministic local Python execution without calling an external LLM server.
 
 ### Frontend UI
@@ -69,6 +77,7 @@ npm run dev
 ```
 
 Vite reads root `.env` (`MOCK_RUNS_ENABLED`) automatically via `frontend/vite.config.ts` (`VITE_API_MODE=api` when `MOCK_RUNS_ENABLED=false`).
+In API mode, use the left-rail **History** tab to reopen a saved run and continue from its persisted stage.
 
 ## Tests & Verification
 

@@ -9,7 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.harness.config import ApprovalPolicy, HarnessConfig, ShellEnvironmentPolicy
+from app.config import BEDROCK_MODEL_ID, LMSTUDIO_MODEL_ID
+from app.harness.config import ApprovalPolicy, HarnessConfig, ModelConfig, ShellEnvironmentPolicy
 from app.harness.events import StreamEventType
 from app.harness.llm_client import LLMClient
 from app.harness.paths import strip_extended_prefix
@@ -19,6 +20,14 @@ from app.harness.tools.edit_file import EditTool
 from app.harness.tools.read_file import ReadFileTool
 from app.harness.tools.shell import ShellTool
 from app.harness.tools.write_file import WriteFileTool
+
+
+def test_bedrock_provider_does_not_use_lmstudio_default_model():
+    cfg = HarnessConfig(
+        provider="bedrock",
+        model=ModelConfig(name=LMSTUDIO_MODEL_ID),
+    )
+    assert cfg.effective_model_name() == BEDROCK_MODEL_ID
 
 
 def test_llm_client_parses_non_stream_tool_calls():
@@ -71,6 +80,175 @@ def test_llm_client_parses_non_stream_tool_calls():
     assert len(tc_completes) == 1
     assert tc_completes[0].tool_call.name == "write_file"
     assert tc_completes[0].tool_call.arguments == {"path": "hello.py", "content": "print(1)"}
+
+
+def test_bedrock_leaves_tool_choice_automatic_for_model_compatibility(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.harness import llm_client as llm_client_module
+
+    requests = []
+
+    class FakeBedrockClient:
+        def converse(self, **kwargs):
+            requests.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "done"}]}}}
+
+    fake_session = SimpleNamespace(client=lambda *_args, **_kwargs: FakeBedrockClient())
+    monkeypatch.setattr(llm_client_module.boto3, "Session", lambda **_kwargs: fake_session)
+
+    async def call(messages):
+        cfg = HarnessConfig(provider="bedrock")
+        client = LLMClient(cfg)
+        async for _ in client.chat_completion(
+            messages,
+            tools=[{"name": "write_file", "parameters": {"type": "object", "properties": {}}}],
+        ):
+            pass
+
+    asyncio.run(call([{"role": "user", "content": "write a file"}]))
+    asyncio.run(
+        call(
+            [
+                {"role": "user", "content": "write a file"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "function": {"name": "write_file", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "written"},
+            ]
+        )
+    )
+
+    assert "toolChoice" not in requests[0]["toolConfig"]
+    assert "toolChoice" not in requests[1]["toolConfig"]
+
+
+def _run_fake_bedrock_converse(monkeypatch, *, cfg_kwargs=None, converse_impl=None):
+    """Drive a single Bedrock chat_completion through a fake client and return captured kwargs."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.harness import llm_client as llm_client_module
+
+    requests: list[dict] = []
+
+    class FakeBedrockClient:
+        def converse(self, **kwargs):
+            requests.append(kwargs)
+            if converse_impl is not None:
+                return converse_impl(len(requests), kwargs)
+            return {"output": {"message": {"content": [{"text": "done"}]}}}
+
+    fake_session = SimpleNamespace(client=lambda *_a, **_k: FakeBedrockClient())
+    monkeypatch.setattr(llm_client_module.boto3, "Session", lambda **_k: fake_session)
+
+    async def call():
+        cfg = HarnessConfig(provider="bedrock", **(cfg_kwargs or {}))
+        client = LLMClient(cfg)
+        events = []
+        async for ev in client.chat_completion([{"role": "user", "content": "hi"}]):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(call())
+    return requests, events
+
+
+def test_bedrock_omits_temperature_by_default(monkeypatch):
+    """Newer Bedrock models reject `temperature`; it must not be sent unless opted in."""
+    requests, _ = _run_fake_bedrock_converse(monkeypatch)
+    assert requests, "converse was not called"
+    inference = requests[0]["inferenceConfig"]
+    assert "temperature" not in inference
+    assert inference["maxTokens"] > 0
+
+
+def test_bedrock_includes_temperature_when_explicitly_enabled(monkeypatch):
+    requests, _ = _run_fake_bedrock_converse(
+        monkeypatch, cfg_kwargs={"bedrock_send_temperature": True}
+    )
+    assert "temperature" in requests[0]["inferenceConfig"]
+
+
+def test_bedrock_self_heals_when_model_reports_temperature_deprecated(monkeypatch):
+    """If a model still rejects a sent field, strip it and retry once rather than failing."""
+    # Record whether temperature was present at each call time (the kwargs dict is mutated
+    # in place on retry, so capture presence here rather than inspecting it afterwards).
+    temp_seen: list[bool] = []
+
+    def converse_impl(call_number, kwargs):
+        temp_seen.append("temperature" in kwargs["inferenceConfig"])
+        if call_number == 1 and "temperature" in kwargs["inferenceConfig"]:
+            raise RuntimeError(
+                "An error occurred (ValidationException): `temperature` is deprecated for this model."
+            )
+        return {"output": {"message": {"content": [{"text": "ok"}]}}}
+
+    _, events = _run_fake_bedrock_converse(
+        monkeypatch,
+        cfg_kwargs={"bedrock_send_temperature": True},
+        converse_impl=converse_impl,
+    )
+    # First call carried temperature and failed; retry dropped it and succeeded.
+    assert temp_seen == [True, False]
+    assert not [e for e in events if e.type == StreamEventType.ERROR]
+    assert [e for e in events if e.type == StreamEventType.TEXT_DELTA]
+
+
+def test_bedrock_merges_consecutive_tool_results_into_one_user_message(monkeypatch):
+    """Bedrock requires all toolResults for an assistant turn in one following user message."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.harness import llm_client as llm_client_module
+
+    requests: list[dict] = []
+
+    class Fake:
+        def converse(self, **kwargs):
+            requests.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "ok"}]}}}
+
+    monkeypatch.setattr(
+        llm_client_module.boto3,
+        "Session",
+        lambda **_k: SimpleNamespace(client=lambda *_a, **_k2: Fake()),
+    )
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        {
+            "role": "assistant",
+            "content": "calling tools",
+            "tool_calls": [
+                {"id": "t1", "function": {"name": "write_file", "arguments": "{}"}},
+                {"id": "t2", "function": {"name": "shell", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "content": "wrote"},
+        {"role": "tool", "tool_call_id": "t2", "content": "ran"},
+    ]
+
+    async def call():
+        cfg = HarnessConfig(provider="bedrock")
+        client = LLMClient(cfg)
+        async for _ in client.chat_completion(messages):
+            pass
+
+    asyncio.run(call())
+    msgs = requests[0]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    last = msgs[-1]["content"]
+    ids = [b["toolResult"]["toolUseId"] for b in last if "toolResult" in b]
+    assert ids == ["t1", "t2"]
 
 
 def test_read_file_truncation_large_file_no_crash(tmp_path: Path):
@@ -253,4 +431,3 @@ def test_harness_runner_end_to_end_with_mock_transport(isolated_env, tmp_path: P
     assert "result.json" in res.files_written
     assert json.loads((ws / "result.json").read_text())["count"] == 3
     assert hashlib.sha256(src_csv.read_bytes()).hexdigest() == before_sha
-

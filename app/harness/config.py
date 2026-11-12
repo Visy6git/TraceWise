@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from app.config import (
     AWS_REGION,
     BEDROCK_MODEL_ID,
+    BEDROCK_SEND_TEMPERATURE,
     LMSTUDIO_BASE_URL,
     LMSTUDIO_MODEL_ID,
     LMSTUDIO_TIMEOUT,
@@ -20,7 +21,11 @@ from app.harness.paths import strip_extended_prefix
 
 
 class ModelConfig(BaseModel):
-    name: str = Field(default_factory=lambda: LMSTUDIO_MODEL_ID)
+    name: str = Field(
+        default_factory=lambda: (
+            BEDROCK_MODEL_ID if get_active_llm_provider() == "bedrock" else LMSTUDIO_MODEL_ID
+        )
+    )
     temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     context_window: int = Field(default=32768, ge=1024)
     max_tokens: int = Field(default=4096, ge=256)
@@ -51,6 +56,7 @@ class HarnessConfig(BaseModel):
     api_key: str | None = Field(default=None)
     base_url: str | None = Field(default=None)
     aws_region: str = Field(default_factory=lambda: AWS_REGION)
+    bedrock_send_temperature: bool = Field(default_factory=lambda: BEDROCK_SEND_TEMPERATURE)
     timeout: float = Field(default_factory=lambda: LMSTUDIO_TIMEOUT, ge=5.0)
     shell_environment: ShellEnvironmentPolicy = Field(default_factory=ShellEnvironmentPolicy)
     max_turns: int = Field(default=30, ge=1)
@@ -98,9 +104,10 @@ class HarnessConfig(BaseModel):
 
     def effective_model_name(self) -> str:
         if self.effective_provider() == "bedrock":
-            return self.model.name if "anthropic." in self.model.name or "." in self.model.name else BEDROCK_MODEL_ID
+            if self.model.name == LMSTUDIO_MODEL_ID:
+                return BEDROCK_MODEL_ID
+            return self.model.name or BEDROCK_MODEL_ID
         return self.model.name or LMSTUDIO_MODEL_ID
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
-

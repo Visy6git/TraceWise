@@ -88,7 +88,6 @@ def build_bedrock_model(model_id: str | None = None, region: str | None = None) 
             region_name=selected_region,
             retries={"max_attempts": 3, "mode": "standard"},
         ),
-        region_name=selected_region,
     )
 
 

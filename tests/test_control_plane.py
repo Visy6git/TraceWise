@@ -9,6 +9,8 @@ from app.control_plane.message_acl import AgentIdentity, MessageDenied, authoriz
 from app.control_plane.run_state import (
     InvalidTransition,
     RunState,
+    validate_stage_pause,
+    validate_stage_rerun,
     validate_stage_start,
     validate_transition,
 )
@@ -79,4 +81,56 @@ def test_rework_requires_explicit_reopened_stage():
     validate_stage_start(RunState.CHANGES_REQUESTED, "rules", rework_stage="rules")
     with pytest.raises(InvalidTransition):
         validate_stage_start(RunState.CHANGES_REQUESTED, "claims", rework_stage="rules")
+
+
+def test_failed_run_is_recoverable_but_complete_is_terminal():
+    # A failed run can re-enter the running state of the stage that failed.
+    validate_transition(RunState.FAILED, RunState.RULES_RUNNING)
+    # Terminal states stay terminal.
+    with pytest.raises(InvalidTransition):
+        validate_transition(RunState.COMPLETE, RunState.CLAIMS_RUNNING)
+    with pytest.raises(InvalidTransition):
+        validate_transition(RunState.CANCELLED, RunState.CLAIMS_RUNNING)
+
+
+def test_rerun_allowed_only_from_failed_or_awaiting_review():
+    # Rerun the failed stage after a failure.
+    validate_stage_rerun(RunState.FAILED, "rules", failed_stage="rules")
+    # Rerun a stage that is awaiting review (e.g. all claims failed verification).
+    validate_stage_rerun(RunState.RULES_AWAITING_REVIEW, "rules")
+    validate_stage_rerun(RunState.CLAIMS_AWAITING_REVIEW, "claims")
+
+
+def test_pause_allowed_only_while_running():
+    validate_stage_pause(RunState.RULES_RUNNING, "rules")
+    validate_stage_pause(RunState.CLAIMS_RUNNING, "claims")
+    with pytest.raises(InvalidTransition):
+        validate_stage_pause(RunState.RULES_AWAITING_REVIEW, "rules")
+    with pytest.raises(InvalidTransition):
+        validate_stage_pause(RunState.RULES_RUNNING, "claims")
+
+
+def test_paused_run_can_be_resumed_via_rerun():
+    # Resume the paused stage (active_stage carried through failed_stage param).
+    validate_stage_rerun(RunState.PAUSED, "rules", failed_stage="rules")
+    validate_transition(RunState.PAUSED, RunState.RULES_RUNNING)
+    # Only the stage that was paused can be resumed.
+    with pytest.raises(InvalidTransition):
+        validate_stage_rerun(RunState.PAUSED, "claims", failed_stage="rules")
+
+
+def test_rerun_rejects_wrong_stage_and_mid_run():
+    # Only the stage that actually failed may be rerun.
+    with pytest.raises(InvalidTransition):
+        validate_stage_rerun(RunState.FAILED, "claims", failed_stage="rules")
+    # Cannot rerun a stage from an unrelated awaiting-review state.
+    with pytest.raises(InvalidTransition):
+        validate_stage_rerun(RunState.CLAIMS_AWAITING_REVIEW, "rules")
+    # Cannot rerun while the run is actively running.
+    with pytest.raises(InvalidTransition):
+        validate_stage_rerun(RunState.RULES_RUNNING, "rules")
+    # Reviewer rework must name the reopened stage.
+    with pytest.raises(InvalidTransition):
+        validate_stage_rerun(RunState.CHANGES_REQUESTED, "claims", rework_stage="rules")
+    validate_stage_rerun(RunState.CHANGES_REQUESTED, "rules", rework_stage="rules")
 

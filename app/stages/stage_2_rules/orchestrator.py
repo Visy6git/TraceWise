@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from app.config import MOCK_RUNS_ENABLED, is_live_llm_enabled
+from app.control_plane.run_control import clear_pause, is_pause_requested
 from app.control_plane.run_state import RunState
 from app.harness.paths import strip_extended_prefix, to_extended_path
 from app.harness.runner import HarnessRunResult, run_harness_task
 from app.schemas.claim import ClaimStatus, VerificationResult
 from app.services.database import default_artifact_repo, default_claim_repo, default_run_repo
 from app.services.event_stream import default_broker
-from app.services.sandbox_client import default_sandbox
+from app.services.sandbox_client import SandboxUnavailable, default_sandbox
 from app.services.storage import default_storage
 
 
@@ -169,6 +170,18 @@ def _ext_path(p: Path) -> Path:
     return p
 
 
+def _ser_rows(frame, cols, cap=200):
+    cols = [c for c in (cols or list(frame.columns)) if c in frame.columns]
+    out = []
+    for _, row in frame.head(cap).iterrows():
+        rec = {{}}
+        for c in cols:
+            v = row[c]
+            rec[str(c)] = None if pd.isna(v) else (v.item() if hasattr(v, "item") else v)
+        out.append(rec)
+    return out
+
+
 def main() -> None:
     src_dir = Path(os.environ.get("SOURCE_INPUT_DIR", "."))
     src_path = _ext_path(src_dir / SOURCE_FILE)
@@ -189,6 +202,7 @@ def main() -> None:
     parent_verified = (parent_target is not None and abs(computed_parent - parent_target) <= 0.15)
 
     children_results = []
+    children_data = []
     all_children_ok = True
     for ch in CHILDREN:
         cid = ch.get("child_claim_id", "")
@@ -198,6 +212,7 @@ def main() -> None:
 
         # Check matching column heuristically in mock data (e.g. Seriousness == 'Yes', Death == 'Yes')
         c_comp = None
+        sub = df.iloc[0:0]
         if "fatal" in rel or "death" in rel:
             death_col = next((c for c in df.columns if "death" in c.lower() or "fatal" in c.lower()), None)
             if death_col:
@@ -236,6 +251,17 @@ def main() -> None:
             "verified": c_ok,
             "notes": f"Computed {{c_comp}} vs reported {{c_rep}}",
         }})
+        sub_cols = [str(c) for c in sub.columns]
+        children_data.append({{
+            "child_claim_id": cid,
+            "label": (str(ch.get("relationship", "child")) + ": " + str(ch.get("raw_statement", "")))[:160],
+            "source_file": SOURCE_FILE,
+            "sheet": SHEET_NAME,
+            "row_count": int(sub.shape[0]),
+            "columns": sub_cols,
+            "rows": _ser_rows(sub, sub_cols),
+            "truncated": bool(sub.shape[0] > 200),
+        }})
 
     verified = bool(parent_verified and (all_children_ok if CHILDREN else True))
     result = {{
@@ -258,6 +284,23 @@ def main() -> None:
         "distinct_key_count": distinct_count,
         "verified": verified,
     }}, indent=2), encoding="utf-8")
+
+    parent_frame = df.drop_duplicates(subset=[key_col])
+    parent_cols = [str(c) for c in df.columns]
+    claim_data = {{
+        "claim_id": CLAIM_ID,
+        "parent": {{
+            "label": "Matched source rows for parent claim (deduplicated on " + str(key_col) + ")",
+            "source_file": SOURCE_FILE,
+            "sheet": SHEET_NAME,
+            "row_count": int(parent_frame.shape[0]),
+            "columns": parent_cols,
+            "rows": _ser_rows(parent_frame, parent_cols),
+            "truncated": bool(parent_frame.shape[0] > 200),
+        }},
+        "children": children_data,
+    }}
+    Path("claim_data.json").write_text(json.dumps(claim_data, indent=2, default=str), encoding="utf-8")
     print(f"{{CLAIM_ID}}: computed={{computed_parent}} reported={{PARENT_REPORTED}} verified={{verified}}")
 
 
@@ -280,6 +323,33 @@ def test_result_json_exists_and_valid():
     assert isinstance(data.get("verified"), bool)
 '''
     (tests_dir / "test_analysis.py").write_text(test_py, encoding="utf-8")
+
+
+def _result_from_workspace(run_id: str, claim_id: str, ws_dir: Path) -> dict[str, Any]:
+    """Build an exec_result from the result.json the harness itself produced.
+
+    Used only when the orchestrator's own sandbox backend is disabled/unavailable; the
+    live harness already executed `python analysis.py` in its scoped shell.
+    """
+    result_path = ws_dir / "result.json"
+    result_data: dict[str, Any] | None = None
+    if result_path.exists():
+        try:
+            result_data = json.loads(result_path.read_text(encoding="utf-8"))
+        except Exception:
+            result_data = None
+    produced = isinstance(result_data, dict)
+    return {
+        "run_id": run_id,
+        "claim_id": claim_id,
+        "script_path": "analysis.py",
+        "exit_code": 0 if produced else -1,
+        "stdout": "",
+        "stderr": "" if produced else "Harness ran but did not produce a valid result.json",
+        "status": "success" if produced else "error",
+        "result_data": result_data,
+        "sandbox": "unavailable-fallback-to-harness-result",
+    }
 
 
 def _publish_claim_artifact(
@@ -314,6 +384,44 @@ def _publish_claim_artifact(
     default_artifact_repo.add_artifact(entry)
     default_broker.emit_artifact_ready(run_id, "rules", entry)
     return entry
+
+
+def _pause_run(
+    run_id: str,
+    verified_count: int,
+    discrepancy_count: int,
+    failed_count: int,
+    processed: int,
+    total: int,
+) -> None:
+    """Transition a running rules stage to PAUSED, preserving completed claim results."""
+    latest = default_run_repo.get_run(run_id)
+    if latest and RunState(latest["status"]) == RunState.RULES_RUNNING:
+        default_run_repo.transition(
+            run_id=run_id,
+            expected_version=latest["version"],
+            new_state=RunState.PAUSED,
+            active_stage="rules",
+        )
+    default_broker.emit_stage_update(run_id, "rules", "paused", progress=int(90 * processed / max(total, 1)))
+    default_broker.emit_activity(
+        run_id=run_id,
+        stage="rules",
+        title="Stage 2 paused",
+        detail=f"Paused after {processed}/{total} claims · {verified_count} verified so far. Resume to continue.",
+        kind="gate",
+        status="warning",
+    )
+    default_broker.emit_run_finished(
+        run_id,
+        "rules",
+        {
+            "paused": True,
+            "verified_count": verified_count,
+            "discrepancy_count": discrepancy_count,
+            "failed_count": failed_count,
+        },
+    )
 
 
 def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[str, Any]:
@@ -355,6 +463,27 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
     total_claims = len(claims)
     for idx, claim in enumerate(claims, start=1):
         claim_id = claim["claim_id"]
+
+        # Cooperative pause: stop at this safe boundary, keep completed work, and
+        # transition the run to PAUSED so it can be resumed (rerun) later.
+        if is_pause_requested(run_id):
+            clear_pause(run_id)
+            _pause_run(run_id, verified_count, discrepancy_count, failed_count, idx - 1, total_claims)
+            return {
+                "run_id": run_id,
+                "status": RunState.PAUSED.value,
+                "verified_count": verified_count,
+                "discrepancy_count": discrepancy_count,
+                "failed_count": failed_count,
+                "paused_after": idx - 1,
+            }
+
+        # On resume, claims already verified are kept as-is and skipped.
+        existing_vr = claim.get("verification_result") or {}
+        if claim.get("status") == ClaimStatus.verified.value and existing_vr.get("verified"):
+            verified_count += 1
+            continue
+
         claim["status"] = ClaimStatus.in_progress.value
         saved_in_progress = default_claim_repo.save_claim(run_id, claim)
         default_broker.emit_claim_update(run_id, saved_in_progress)
@@ -404,6 +533,7 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
         )
 
         tool_history: list[dict[str, Any]] = []
+        harness_diagnostics: dict[str, Any] | None = None
         if use_live:
             goal = (
                 f"Verify clinical claim `{claim_id}` inside workspace `{ws_dir}`.\n\n"
@@ -415,7 +545,22 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
                 f"2. `analysis.py` MUST read source file(s) from `os.environ['SOURCE_INPUT_DIR']`, verify BOTH `parent_claim` "
                 f"and every item in `children_claims` (when non-empty), and write `result.json` + `evidence_bundle.json` "
                 f"in `.` with `verified` (bool), `computed_value`, `reported_value`, `parent_verified`, and `children_results`.\n"
-                f"3. Execute `python analysis.py` and `python -m pytest tests/test_analysis.py -q` via `shell`. Fix any errors before finishing."
+                f"3. `analysis.py` MUST ALSO write `claim_data.json` in `.` containing the ACTUAL source rows that back "
+                f"each claim, so a reviewer can view the underlying data in the UI. Exact schema:\n"
+                f"   {{\n"
+                f'     "claim_id": "{claim_id}",\n'
+                f'     "parent": {{"label": <short description of this matched subset>, "source_file": <file>, '
+                f'"sheet": <sheet or null>, "row_count": <true total matched, int>, "columns": [<ordered column names>], '
+                f'"rows": [<up to 200 matched rows as JSON objects keyed by column name>], "truncated": <bool>}},\n'
+                f'     "children": [{{"child_claim_id": <id>, "label": <desc>, "source_file": <file>, "sheet": <sheet>, '
+                f'"row_count": <int>, "columns": [...], "rows": [...up to 200...], "truncated": <bool>}} for each child]\n'
+                f"   }}\n"
+                f"   The parent `rows` must be the exact rows that produce `computed_value` (e.g. the distinct cases "
+                f"counted); each child's `rows` the rows producing that child's `computed_value`. Choose the dedup key "
+                f"plus the filter/descriptive columns as `columns` (do not dump all 30+ columns). Convert NaN to null; "
+                f"values must be JSON-serializable (cast numpy/pandas scalars to str/int/float). Cap each `rows` list at 200 "
+                f"and set `truncated` true when the true `row_count` exceeds what you included.\n"
+                f"4. Execute `python analysis.py` and `python -m pytest tests/test_analysis.py -q` via `shell`. Fix any errors before finishing."
             )
             h_res: HarnessRunResult = run_harness_task(
                 run_id=run_id,
@@ -433,6 +578,15 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
                 max_turns=24,
             )
             tool_history = h_res.tool_history
+            harness_diagnostics = {
+                "success": h_res.success,
+                "final_response": h_res.final_response,
+                "turns": h_res.turns,
+                "tool_calls_count": h_res.tool_calls_count,
+                "error": h_res.error,
+                "files_written": h_res.files_written,
+                "elapsed_seconds": h_res.elapsed_seconds,
+            }
         else:
             # Deterministic real-Python script creation using discovered source coordinates
             primary_fn = Path(matched_src_path).name if matched_src_path else "source.xlsx"
@@ -466,24 +620,48 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
         # Deterministic post-execution verification in sandbox
         exec_result: dict[str, Any]
         if (ws_dir / "analysis.py").exists():
-            exec_result = default_sandbox.execute(
-                run_id=run_id,
-                claim_id=claim_id,
-                script_path="analysis.py",
-                workspace_dir=ws_dir,
-                source_input_dir=src_parent,
-            )
+            try:
+                exec_result = default_sandbox.execute(
+                    run_id=run_id,
+                    claim_id=claim_id,
+                    script_path="analysis.py",
+                    workspace_dir=ws_dir,
+                    source_input_dir=src_parent,
+                )
+            except SandboxUnavailable:
+                # Sandbox backend is disabled/unavailable. The live harness already ran
+                # `python analysis.py` in its own shell, so honor the result.json it wrote.
+                exec_result = _result_from_workspace(run_id, claim_id, ws_dir)
         else:
+            if harness_diagnostics:
+                if harness_diagnostics["error"]:
+                    failure_detail = f"Harness error: {harness_diagnostics['error']}"
+                elif not harness_diagnostics["tool_calls_count"]:
+                    failure_detail = "Harness completed without making a tool call."
+                    if harness_diagnostics["final_response"]:
+                        failure_detail += (
+                            f" Final response: {harness_diagnostics['final_response'][:2000]}"
+                        )
+                else:
+                    failure_detail = (
+                        "Harness made "
+                        f"{harness_diagnostics['tool_calls_count']} tool calls but did not "
+                        "create analysis.py."
+                    )
+            else:
+                failure_detail = "Harness finished without creating analysis.py"
             exec_result = {
                 "run_id": run_id,
                 "claim_id": claim_id,
                 "script_path": "analysis.py",
                 "exit_code": -1,
                 "stdout": "",
-                "stderr": "Harness finished without creating analysis.py",
+                "stderr": failure_detail,
                 "status": "error",
                 "result_data": None,
             }
+        if harness_diagnostics:
+            exec_result["harness"] = harness_diagnostics
 
         # Enforce source immutability strictly
         after_hashes = _snapshot_hashes(source_paths)
@@ -555,11 +733,13 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
 
         # Publish artifacts for this claim
         result_art_id: str | None = None
+        data_art_id: str | None = None
         artifact_specs = [
             ("plan.md", "text/markdown"),
             ("analysis.py", "text/x-python"),
             ("result.json", "application/json"),
             ("evidence_bundle.json", "application/json"),
+            ("claim_data.json", "application/json"),
             ("execution.json", "application/json"),
             ("tests/test_analysis.py", "text/x-python"),
         ]
@@ -570,6 +750,8 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
                 claim_artifact_hashes[art["logical_path"]] = art["sha256"]
                 if rel_name == "result.json":
                     result_art_id = art["artifact_id"]
+                elif rel_name == "claim_data.json":
+                    data_art_id = art["artifact_id"]
 
         if tool_history:
             hist_body = "\n".join(json.dumps(e) for e in tool_history)
@@ -578,6 +760,9 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
 
         if result_art_id:
             claim["verification_result"]["result_artifact_id"] = result_art_id
+        if data_art_id:
+            claim["verification_result"]["data_artifact_id"] = data_art_id
+            claim["verification_result"]["data_available"] = True
 
         updated_claim = default_claim_repo.save_claim(run_id, claim)
         default_broker.emit_claim_update(run_id, updated_claim)

@@ -19,6 +19,7 @@ class RunStatus(StrEnum):
     CHANGES_REQUESTED = "CHANGES_REQUESTED"
     CANCELLED = "CANCELLED"
     FAILED = "FAILED"
+    PAUSED = "PAUSED"
 
 
 class StageStartRequest(BaseModel):
@@ -46,6 +47,10 @@ class RunSummary(BaseModel):
     run_name: str
     status: RunStatus
     active_stage: StageName | None = None
+    target_document_filename: str | None = None
+    product_name: str | None = None
+    reporting_period_start: str | None = None
+    reporting_period_end: str | None = None
     input_manifest_hash: str
     stage_1_manifest_hash: str | None = None
     stage_2_manifest_hash: str | None = None

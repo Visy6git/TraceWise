@@ -108,6 +108,10 @@ class VerificationResult(BaseModel):
     discrepancy_summary: str | None = None
     script_path: str | None = None
     result_artifact_id: str | None = None
+    # Stage 2 also emits the actual source rows backing the parent and each child claim
+    # (claim_data.json) so a verified claim's underlying evidence can be viewed in the UI.
+    data_available: bool = False
+    data_artifact_id: str | None = None
     verified_at: str | None = None
 
 

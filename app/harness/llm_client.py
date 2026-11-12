@@ -383,13 +383,30 @@ class LLMClient:
                     {"role": "user", "content": [{"text": str(m.get("content", ""))}]}
                 )
 
+        # Bedrock Converse requires strict user/assistant alternation and that every
+        # `toolResult` for an assistant turn's `toolUse` blocks live in the SINGLE user
+        # message that immediately follows. The harness records each tool result as its
+        # own message, so merge consecutive same-role messages before sending — otherwise
+        # Bedrock raises "Expected toolResult blocks at messages.N.content".
+        merged_msgs: list[dict[str, Any]] = []
+        for msg in converse_msgs:
+            if merged_msgs and merged_msgs[-1]["role"] == msg["role"]:
+                merged_msgs[-1]["content"].extend(msg["content"])
+            else:
+                merged_msgs.append({"role": msg["role"], "content": list(msg["content"])})
+        converse_msgs = merged_msgs
+
+        inference_config: dict[str, Any] = {"maxTokens": self.config.model.max_tokens}
+        # Newer Bedrock models (e.g. Claude Sonnet 5.5) reject `temperature` with a
+        # ValidationException ("`temperature` is deprecated for this model"). Only send
+        # it when explicitly enabled for an older model that still accepts it.
+        if self.config.bedrock_send_temperature:
+            inference_config["temperature"] = self.config.temperature
+
         kwargs: dict[str, Any] = {
             "modelId": self.config.effective_model_name(),
             "messages": converse_msgs,
-            "inferenceConfig": {
-                "maxTokens": self.config.model.max_tokens,
-                "temperature": self.config.temperature,
-            },
+            "inferenceConfig": inference_config,
         }
         if system_blocks:
             kwargs["system"] = system_blocks
@@ -421,8 +438,31 @@ class LLMClient:
         try:
             resp = await asyncio.to_thread(_call)
         except Exception as exc:
-            yield StreamEvent(type=StreamEventType.ERROR, error=f"Bedrock converse error: {exc}")
-            return
+            # Self-heal when a model rejects a deprecated inferenceConfig field
+            # (e.g. "`temperature` is deprecated for this model"): strip the offending
+            # key(s) and retry once before surfacing the error.
+            msg = str(exc)
+            if "deprecated" in msg.lower() and isinstance(kwargs.get("inferenceConfig"), dict):
+                removed = False
+                for field_name in ("temperature", "topP", "topK"):
+                    if field_name.lower() in msg.lower() and field_name in kwargs["inferenceConfig"]:
+                        del kwargs["inferenceConfig"][field_name]
+                        removed = True
+                if removed:
+                    try:
+                        resp = await asyncio.to_thread(_call)
+                    except Exception as retry_exc:
+                        yield StreamEvent(
+                            type=StreamEventType.ERROR,
+                            error=f"Bedrock converse error: {retry_exc}",
+                        )
+                        return
+                else:
+                    yield StreamEvent(type=StreamEventType.ERROR, error=f"Bedrock converse error: {exc}")
+                    return
+            else:
+                yield StreamEvent(type=StreamEventType.ERROR, error=f"Bedrock converse error: {exc}")
+                return
 
         out_msg = resp.get("output", {}).get("message", {})
         for block in out_msg.get("content", []):
@@ -455,4 +495,3 @@ class LLMClient:
                 total_tokens=int(usage_raw.get("totalTokens", 0) or 0),
             ),
         )
-

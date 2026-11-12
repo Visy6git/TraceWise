@@ -8,6 +8,7 @@ export type StageStatus =
   | 'changes_requested'
   | 'complete'
   | 'error'
+  | 'paused'
   | 'placeholder';
 export type ClaimStatus =
   | 'draft'
@@ -79,7 +80,45 @@ export interface VerificationResult {
   discrepancy_summary?: string | null;
   script_path?: string | null;
   result_artifact_id?: string | null;
+  data_available?: boolean | null;
+  data_artifact_id?: string | null;
   verified_at?: string | null;
+}
+
+export interface ClaimDataTable {
+  child_claim_id?: string;
+  label: string;
+  source_file?: string | null;
+  sheet?: string | null;
+  row_count: number;
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+  truncated: boolean;
+}
+
+export interface ClaimData {
+  run_id: string;
+  claim_id: string;
+  parent: ClaimDataTable | null;
+  children: ClaimDataTable[];
+}
+
+export interface ClaimSheet {
+  source_file: string;
+  sheet?: string | null;
+  header_row_index: number;
+  row_count: number;
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+  offset?: number;
+  truncated: boolean;
+  error?: string;
+}
+
+export interface ClaimSourceData {
+  run_id: string;
+  claim_id: string;
+  sheets: ClaimSheet[];
 }
 
 export interface Claim {
