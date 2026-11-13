@@ -1,6 +1,10 @@
 """API tests for Stage 3 Understanding and legacy evaluation deprecation."""
 from __future__ import annotations
 
+import hashlib
+import json
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from app.control_plane.run_state import RunState
@@ -121,10 +125,78 @@ def test_start_understanding_preconditions(isolated_env):
     assert "stale" in resp.json()["detail"].lower()
 
 
+def test_rerun_understanding_after_stage3_approval(isolated_env, monkeypatch):
+    client = TestClient(app)
+    run_repo: RunRepository = isolated_env["run_repo"]
+    run_id = "run-rerun-approved-stage3"
+    stage_2_hash = "stage-2-hash-12345678"
+
+    run_repo.create_run(
+        run_id=run_id,
+        run_name="Rerun approved Stage 3",
+        target_object_id="target-1",
+        source_object_ids=["source-1"],
+        input_manifest_hash="input-hash-12345678",
+    )
+    run = run_repo.get_run(run_id)
+    run_repo.transition(run_id, run["version"], RunState.CLAIMS_RUNNING, active_stage="claims")
+    run = run_repo.get_run(run_id)
+    run_repo.transition(run_id, run["version"], RunState.CLAIMS_AWAITING_REVIEW, active_stage="claims")
+    run_repo.set_manifest_hash(run_id, "claims", "stage-1-hash-12345678")
+    run = run_repo.get_run(run_id)
+    run_repo.record_approval(
+        run_id, "claims", "reviewer", "approve", run["version"], "stage-1-hash-12345678",
+    )
+    run = run_repo.get_run(run_id)
+    run_repo.transition(run_id, run["version"], RunState.RULES_RUNNING, active_stage="rules")
+    run = run_repo.get_run(run_id)
+    run_repo.transition(run_id, run["version"], RunState.RULES_AWAITING_REVIEW, active_stage="rules")
+    run_repo.set_manifest_hash(run_id, "rules", stage_2_hash)
+    run = run_repo.get_run(run_id)
+    run_repo.record_approval(run_id, "rules", "reviewer", "approve", run["version"], stage_2_hash)
+    run = run_repo.get_run(run_id)
+    run_repo.transition(run_id, run["version"], RunState.EVALUATION_RUNNING, active_stage="evaluation")
+    run = run_repo.get_run(run_id)
+    run_repo.transition(run_id, run["version"], RunState.EVALUATION_AWAITING_REVIEW, active_stage="evaluation")
+    run_repo.set_manifest_hash(run_id, "evaluation", "stage-3-hash-12345678")
+    run = run_repo.get_run(run_id)
+    run_repo.record_approval(
+        run_id, "evaluation", "reviewer", "approve", run["version"], "stage-3-hash-12345678",
+    )
+    assert run_repo.get_run(run_id)["status"] == RunState.COMPLETE
+
+    started_threads = []
+
+    class DeferredThread:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def start(self):
+            started_threads.append(self)
+
+    blueprints_api = __import__("app.api.blueprints", fromlist=["blueprints"])
+    monkeypatch.setattr(blueprints_api, "threading", SimpleNamespace(Thread=DeferredThread))
+
+    response = client.post(
+        f"/api/runs/{run_id}/stages/understanding/rerun",
+        json={
+            "expected_input_manifest_hash": stage_2_hash,
+            "idempotency_key": "idempotency-key-1234",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert run_repo.get_run(run_id)["status"] == RunState.EVALUATION_RUNNING
+    assert len(started_threads) == 1
+    assert started_threads[0].kwargs["args"] == (run_id, stage_2_hash)
+
+
 def test_review_understanding_manifest_verification(isolated_env, monkeypatch):
     client = TestClient(app)
     run_repo: RunRepository = isolated_env["run_repo"]
     bp_repo: BlueprintRepository = isolated_env["blueprint_repo"]
+    storage = isolated_env["storage"]
 
     run_id = "run-review-test-1"
     run_repo.create_run(
@@ -182,15 +254,16 @@ def test_review_understanding_manifest_verification(isolated_env, monkeypatch):
     assert resp.status_code == 409
     assert "No Stage 3 blueprint candidate found" in resp.json()["detail"]
 
-    # Register candidate with different hash
+    # Register an incomplete candidate. A matching manifest hash is not enough
+    # to approve a package that has no executable reproduction entrypoint.
     bp_repo.register_candidate(
         blueprint_id="bp-test-rev",
         tenant_id="default",
         source_learning_run_id=run_id,
         version=1,
-        status="candidate_review",
+        status="needs_review",
         manifest_hash="actual-candidate-hash-1234",
-        manifest={"blueprint_id": "bp-test-rev", "manifest_sha256": "actual-candidate-hash-1234"},
+        manifest={"blueprint_id": "bp-test-rev", "files": [{"path": "blueprint.json"}]},
     )
 
     # Attempt to approve with mismatched expected hash -> 409
@@ -205,12 +278,57 @@ def test_review_understanding_manifest_verification(isolated_env, monkeypatch):
     assert resp.status_code == 409
     assert "Blueprint manifest mismatch" in resp.json()["detail"]
 
-    # Approve with exact matching hash -> 200
     resp = client.post(
         f"/api/runs/{run_id}/stages/understanding/review",
         json={
             "decision": "approve",
             "expected_manifest_hash": "actual-candidate-hash-1234",
+            "reviewer_note": "LGTM",
+        },
+    )
+    assert resp.status_code == 409
+    assert "reproduce_section.py" in resp.json()["detail"]
+
+    package_files = []
+    package_contents = {
+        "blueprint.json": json.dumps({
+            "status": "ready_for_review",
+            "validation": {"status": "structurally_ready_for_reviewer"},
+        }),
+        "reproduce_section.py": "from pathlib import Path\n",
+    }
+    for path, content in package_contents.items():
+        stored = storage.put_immutable(
+            tenant_id="blueprints-default",
+            run_id="bp-test-rev",
+            logical_path=f"versions/v001/{path}",
+            body=content,
+        )
+        package_files.append({
+            "path": path,
+            "object_id": stored["object_id"],
+            "sha256": stored["sha256"],
+            "size_bytes": stored["size_bytes"],
+        })
+    valid_manifest_hash = hashlib.sha256(
+        json.dumps(package_files, sort_keys=True).encode()
+    ).hexdigest()
+    bp_repo.register_candidate(
+        blueprint_id="bp-test-rev",
+        tenant_id="default",
+        source_learning_run_id=run_id,
+        version=1,
+        status="ready_for_review",
+        manifest_hash=valid_manifest_hash,
+        manifest={"blueprint_id": "bp-test-rev", "files": package_files},
+    )
+
+    # Approve only after package validation succeeds.
+    resp = client.post(
+        f"/api/runs/{run_id}/stages/understanding/review",
+        json={
+            "decision": "approve",
+            "expected_manifest_hash": valid_manifest_hash,
             "reviewer_note": "Approved!",
         },
     )

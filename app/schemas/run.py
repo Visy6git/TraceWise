@@ -25,6 +25,7 @@ class RunStatus(StrEnum):
 class StageStartRequest(BaseModel):
     expected_input_manifest_hash: str = Field(min_length=16)
     idempotency_key: str = Field(min_length=8)
+    claim_id: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class ReviewDecision(BaseModel):

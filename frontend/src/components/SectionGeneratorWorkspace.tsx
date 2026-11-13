@@ -25,6 +25,7 @@ export function SectionGeneratorWorkspace() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [liveEvents, setLiveEvents] = useState<AGUIEvent[]>([]);
   const connection = useAguiEvents(active?.generation_id || '', Boolean(active?.generation_id), event => {
     setLiveEvents(current => [...current.slice(-39), event]);
@@ -43,6 +44,7 @@ export function SectionGeneratorWorkspace() {
         const fresh = await generatorApi.getGeneration(active.generation_id);
         setActive(fresh);
       }
+      setLoadError('');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
 
@@ -55,6 +57,7 @@ export function SectionGeneratorWorkspace() {
       try {
         const [bps, gens] = await Promise.all([generatorApi.listBlueprints(), generatorApi.listGenerations()]);
         if (!mounted) return;
+        setLoadError('');
         setBlueprints(bps);
         setGenerations(gens);
         setSelectedBlueprint(current => current || bps[0]?.blueprint_id || '');
@@ -63,7 +66,7 @@ export function SectionGeneratorWorkspace() {
           if (mounted) setActive(fresh);
         }
       } catch (e) {
-        if (mounted) setError(e instanceof Error ? e.message : String(e));
+        if (mounted) setLoadError(e instanceof Error ? e.message : String(e));
       } finally {
         inFlight = false;
       }
@@ -132,7 +135,7 @@ export function SectionGeneratorWorkspace() {
         <button className="tw-icon-action" onClick={() => void refresh()} title="Refresh"><RefreshCw size={16}/></button>
       </header>
       {notice && <div className="tw-notice"><CheckCircle2 size={16}/>{notice}</div>}
-      {error && <div className="tw-error"><AlertTriangle size={16}/>{error}</div>}
+      {(error || loadError) && <div className="tw-error"><AlertTriangle size={16}/>{error || loadError}</div>}
       <div className="tw-generator-grid">
         <section className="tw-card">
           <div className="tw-card-title"><ShieldCheck size={17}/><h2>Methodology</h2></div>
@@ -142,6 +145,7 @@ export function SectionGeneratorWorkspace() {
               {blueprints.map(b => <option key={b.blueprint_id} value={b.blueprint_id}>{b.blueprint_id} · v{b.version}</option>)}
             </select>
             {blueprint && <div className="tw-blueprint-meta"><strong>{blueprint.blueprint_id}</strong><span>Version {blueprint.version}</span><Status value={blueprint.version_status}/><small>Learning run: {blueprint.source_learning_run_id}</small><code>{blueprint.manifest_hash.slice(0, 20)}…</code></div>}
+            {blueprint?.generation_error && <div className="tw-warning"><AlertTriangle size={16}/>{blueprint.generation_error} Return to the Learning Workbench, create a complete Stage 3 candidate, and approve a new version.</div>}
           </> : <div className="tw-empty"><ShieldCheck size={24}/><strong>No approved blueprint yet</strong><span>Complete Stage 3 in a Learning Workbench run and approve its blueprint to unlock annual generation.</span></div>}
         </section>
         <section className="tw-card">
@@ -151,7 +155,7 @@ export function SectionGeneratorWorkspace() {
           <label className="tw-label">Data as-of date (optional)</label><input type="date" value={asOfDate} onChange={e => setAsOfDate(e.target.value)}/>
           <label className="tw-dropzone"><CloudUpload size={26}/><strong>Choose XLSX / CSV files</strong><span>Source extracts only. No target PBRER is required.</span><input type="file" multiple accept=".xlsx,.csv" onChange={e => addFiles(e.target.files)}/></label>
           {!!files.length && <div className="tw-file-list">{files.map((f, i) => <div key={`${f.name}-${i}`}><FileSpreadsheet size={15}/><span>{f.name}</span><small>{(f.size/1024/1024).toFixed(1)} MB</small><button onClick={() => setFiles(prev => prev.filter((_,j) => j!==i))}>Remove</button></div>)}</div>}
-          <button className="tw-primary" disabled={!blueprint || !files.length || busy} onClick={() => void create()}>{busy ? <LoaderCircle className="tw-spin" size={16}/> : <ArrowRight size={16}/>} Create generation run</button>
+          <button className="tw-primary" disabled={!blueprint || Boolean(blueprint.generation_error) || !files.length || busy} onClick={() => void create()}>{busy ? <LoaderCircle className="tw-spin" size={16}/> : <ArrowRight size={16}/>} Create generation run</button>
         </section>
       </div>
       <section className="tw-card tw-pipeline-card">

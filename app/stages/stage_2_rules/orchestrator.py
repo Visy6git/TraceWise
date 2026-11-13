@@ -424,7 +424,11 @@ def _pause_run(
     )
 
 
-def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[str, Any]:
+def run_rules_stage(
+    run_id: str,
+    expected_stage_1_manifest_hash: str,
+    claim_id: str | None = None,
+) -> dict[str, Any]:
     run = default_run_repo.get_run(run_id)
     if not run:
         raise ValueError(f"Run {run_id} not found")
@@ -435,9 +439,24 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
     default_broker.emit_run_started(run_id, "rules")
     default_broker.emit_stage_update(run_id, "rules", "running", progress=5)
 
-    claims = default_claim_repo.list_claims(run_id)
-    if not claims:
+    all_claims = default_claim_repo.list_claims(run_id)
+    if not all_claims:
         raise ValueError(f"No claims found for run {run_id}; cannot run Stage 2")
+    claim_positions = {
+        claim["claim_id"]: idx for idx, claim in enumerate(all_claims, start=1)
+    }
+    if claim_id is not None:
+        selected_claim = next(
+            (claim for claim in all_claims if claim["claim_id"] == claim_id),
+            None,
+        )
+        if selected_claim is None:
+            raise ValueError(f"Claim {claim_id} not found for run {run_id}")
+        if selected_claim.get("status") != ClaimStatus.failed.value:
+            raise ValueError(f"Claim {claim_id} can only be retried when its status is failed")
+        claims = [selected_claim]
+    else:
+        claims = all_claims
 
     per_file_mds, master_md = _load_source_markdown_map(run_id)
     rule_system_prompt = _load_rule_prompt()
@@ -458,11 +477,10 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
     verified_count = 0
     failed_count = 0
     discrepancy_count = 0
-    claim_artifact_hashes: dict[str, str] = {}
-
-    total_claims = len(claims)
-    for idx, claim in enumerate(claims, start=1):
+    total_claims = len(all_claims)
+    for claim in claims:
         claim_id = claim["claim_id"]
+        idx = claim_positions[claim_id]
 
         # Cooperative pause: stop at this safe boundary, keep completed work, and
         # transition the run to PAUSED so it can be resumed (rerun) later.
@@ -747,7 +765,6 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
             p = ws_dir / rel_name
             if p.exists():
                 art = _publish_claim_artifact(run_id, claim_id, rel_name, media_type, p.read_text(encoding="utf-8"))
-                claim_artifact_hashes[art["logical_path"]] = art["sha256"]
                 if rel_name == "result.json":
                     result_art_id = art["artifact_id"]
                 elif rel_name == "claim_data.json":
@@ -755,8 +772,7 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
 
         if tool_history:
             hist_body = "\n".join(json.dumps(e) for e in tool_history)
-            art = _publish_claim_artifact(run_id, claim_id, "tool_history.jsonl", "application/x-ndjson", hist_body)
-            claim_artifact_hashes[art["logical_path"]] = art["sha256"]
+            _publish_claim_artifact(run_id, claim_id, "tool_history.jsonl", "application/x-ndjson", hist_body)
 
         if result_art_id:
             claim["verification_result"]["result_artifact_id"] = result_art_id
@@ -780,6 +796,17 @@ def run_rules_stage(run_id: str, expected_stage_1_manifest_hash: str) -> dict[st
         )
         progress = int(10 + 85 * (idx / total_claims))
         default_broker.emit_stage_update(run_id, "rules", "running", progress=progress)
+
+    # Rebuild totals and hashes from persisted state so a targeted retry still
+    # produces a complete manifest for every claim in the stage.
+    final_claims = default_claim_repo.list_claims(run_id)
+    verified_count = sum(c.get("status") == ClaimStatus.verified.value for c in final_claims)
+    discrepancy_count = sum(c.get("status") == ClaimStatus.discrepancy.value for c in final_claims)
+    failed_count = sum(c.get("status") == ClaimStatus.failed.value for c in final_claims)
+    claim_artifact_hashes = {
+        artifact["logical_path"]: artifact["sha256"]
+        for artifact in default_artifact_repo.list_artifacts(run_id, stage="rules")
+    }
 
     # Freeze Stage 2 manifest & transition to RULES_AWAITING_REVIEW
     manifest_payload = json.dumps(

@@ -13,6 +13,7 @@ export interface BlueprintSummary {
   manifest_hash: string;
   approved_at?: string | null;
   approved_by?: string | null;
+  generation_error?: string | null;
   manifest?: { files?: Array<{ path: string; sha256: string; size_bytes: number }> };
 }
 

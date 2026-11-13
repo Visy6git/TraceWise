@@ -7,6 +7,7 @@ import {
   Database,
   FileSpreadsheet,
   GitBranch,
+  RotateCcw,
   Search,
   Sparkles,
   XCircle,
@@ -22,6 +23,7 @@ export function ClaimInspector({
   onOpenLocation,
   onOpenArtifact,
   onViewData,
+  onRetryClaim,
 }: {
   claim: Claim;
   sources: SourceFile[];
@@ -31,6 +33,7 @@ export function ClaimInspector({
   onOpenLocation: (sectionId: string) => void;
   onOpenArtifact: (artifact: ArtifactItem) => void;
   onViewData: (claim: Claim) => void;
+  onRetryClaim?: (claim: Claim) => void;
 }) {
   const vr = claim.verificationResult;
   const isVerified = claim.status === 'verified' || vr?.verified === true;
@@ -181,6 +184,11 @@ export function ClaimInspector({
       </div>
 
       <div className="inspector-action-stack">
+        {claim.status === 'failed' && onRetryClaim && (
+          <button className="button-secondary full-width" onClick={() => onRetryClaim(claim)}>
+            <RotateCcw size={14} /> Retry this claim
+          </button>
+        )}
         {hasData && (
           <button className="button-primary full-width view-data-button" onClick={() => onViewData(claim)}>
             <Database size={14} /> View matched source data

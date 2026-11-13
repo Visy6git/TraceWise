@@ -698,7 +698,7 @@ function App() {
           setNotice('Stage 2 rules manifest is missing. Rerun or approve Stage 2 first.');
           return;
         }
-        await generatorApi.startUnderstanding(run.runId, rulesHash);
+        await generatorApi.rerunUnderstanding(run.runId, rulesHash);
         setNotice('Section 16.3 Understanding started — streaming blueprint authoring activity.');
         await refreshLiveRun(run.runId);
       } catch (error) {
@@ -805,6 +805,27 @@ function App() {
       }));
       await api.rerunStage(run.runId, stageId, inputHash, crypto.randomUUID());
       setNotice(`${stageLabel[stageId]} re-running — streaming live harness & Strands activity.`);
+    } catch (error) {
+      await refreshLiveRun(run.runId);
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingStage(false);
+    }
+  }
+
+  async function retryFailedClaim(claim: Claim) {
+    if (!apiMode || !run.runId) return;
+    setLoadingStage(true);
+    try {
+      const summary = await api.getRun(run.runId);
+      const inputHash = summary.stage_1_manifest_hash;
+      if (!inputHash) {
+        setNotice('Stage 1 manifest is missing. Complete or approve Stage 1 before retrying this claim.');
+        return;
+      }
+      await api.rerunStage(run.runId, 'rules', inputHash, crypto.randomUUID(), claim.id);
+      setNotice(`Retrying ${claim.id} only — other claim results will be preserved.`);
+      await refreshLiveRun(run.runId);
     } catch (error) {
       await refreshLiveRun(run.runId);
       setNotice(error instanceof Error ? error.message : String(error));
@@ -1623,6 +1644,7 @@ function App() {
                     }
                     onRerun={() => rerunStage('claims')}
                     onPause={() => void pauseStage('claims')}
+                    canRerunApproved={apiMode && run.status.replaceAll(' ', '_') === 'CLAIMS_APPROVED'}
                     disabled={['locked', 'running', 'approved'].includes(run.stages[0].status)}
                   />
                   <StageControl
@@ -1653,6 +1675,7 @@ function App() {
                     }
                     onRerun={() => rerunStage('rules')}
                     onPause={() => void pauseStage('rules')}
+                    canRerunApproved={apiMode && run.status.replaceAll(' ', '_') === 'RULES_APPROVED'}
                     disabled={['locked', 'running', 'approved'].includes(run.stages[1].status)}
                   />
                   <StageControl
@@ -1683,6 +1706,7 @@ function App() {
                     }
                     onRerun={() => rerunStage('evaluation')}
                     onPause={() => void pauseStage('evaluation')}
+                    canRerunApproved={apiMode && run.status === 'COMPLETE'}
                     disabled={['locked', 'running', 'approved'].includes(run.stages[2].status)}
                   />
                 </div>
@@ -1783,6 +1807,15 @@ function App() {
                         }}
                         onOpenArtifact={art => void openArtifact(art)}
                         onViewData={c => void openClaimData(c)}
+                        onRetryClaim={
+                          apiMode &&
+                          !loadingStage &&
+                          ['review', 'error', 'paused'].includes(
+                            run.stages.find(stage => stage.id === 'rules')?.status ?? '',
+                          )
+                            ? c => void retryFailedClaim(c)
+                            : undefined
+                        }
                       />
                     )}
                   </>
@@ -2268,6 +2301,7 @@ function StageControl({
   onAction,
   onRerun,
   onPause,
+  canRerunApproved = false,
   disabled,
 }: {
   stage: RunSnapshot['stages'][number];
@@ -2277,11 +2311,14 @@ function StageControl({
   onAction: () => void;
   onRerun?: () => void;
   onPause?: () => void;
+  canRerunApproved?: boolean;
   disabled: boolean;
 }) {
   // Offer a dedicated rerun when the stage awaits review (rerun instead of approving).
   // For an errored/paused stage the primary action already reruns/resumes it.
-  const showSecondaryRerun = Boolean(onRerun) && stage.status === 'review';
+  const showSecondaryRerun = Boolean(onRerun) && (
+    stage.status === 'review' || (stage.status === 'approved' && canRerunApproved)
+  );
   const showPause = Boolean(onPause) && stage.status === 'running';
   const isResumeLike = stage.status === 'error' || stage.status === 'paused';
   return (

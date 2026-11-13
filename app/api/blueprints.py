@@ -24,7 +24,7 @@ from app.services.database import default_run_repo
 from app.services.event_stream import default_broker, stream_run_events
 from app.services.storage import default_storage
 from app.stages.stage_3_understanding.orchestrator import run_understanding_stage
-from app.runtime.generation_service import run_generation
+from app.runtime.generation_service import load_blueprint_package, run_generation
 
 router = APIRouter(tags=["blueprints", "generation"])
 MAX_FILE_MB = 250
@@ -162,6 +162,15 @@ def review_understanding(run_id: str, decision: ReviewDecision, request: Request
                 status_code=409,
                 detail=f"Blueprint manifest mismatch: expected {decision.expected_manifest_hash[:16]}, candidate has {str(candidate.get('manifest_hash'))[:16]}",
             )
+        try:
+            load_blueprint_package(
+                candidate["tenant_id"],
+                candidate["blueprint_id"],
+                candidate["version"],
+                require_approved=False,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     try:
         updated = default_run_repo.record_approval(
@@ -209,7 +218,19 @@ def get_run_blueprint(run_id: str, request: Request):
 @router.get("/blueprints")
 def list_blueprints(request: Request, tenant_id: str | None = None):
     resolved_tenant = _resolve_tenant(request, tenant_id)
-    return default_blueprint_repo.list_approved(resolved_tenant)
+    blueprints = default_blueprint_repo.list_approved(resolved_tenant)
+    for blueprint in blueprints:
+        try:
+            load_blueprint_package(
+                resolved_tenant,
+                blueprint["blueprint_id"],
+                blueprint["version"],
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            blueprint["generation_error"] = str(exc)
+        else:
+            blueprint["generation_error"] = None
+    return blueprints
 
 
 @router.get("/blueprints/{blueprint_id}")
@@ -242,6 +263,10 @@ async def create_generation(
     blueprint = default_blueprint_repo.get(resolved_tenant, blueprint_id, blueprint_version)
     if not blueprint or blueprint.get("version_status") != "approved":
         raise HTTPException(status_code=409, detail="Selected blueprint version is not approved")
+    try:
+        load_blueprint_package(resolved_tenant, blueprint_id, blueprint_version)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if reporting_period_start > reporting_period_end:
         raise HTTPException(status_code=400, detail="Reporting period start must not be after end")
 
@@ -335,6 +360,10 @@ def start_generation(generation_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Generation run not found")
     if item["status"] not in {"created", "failed"}:
         raise HTTPException(status_code=409, detail=f"Generation cannot start from {item['status']}")
+    try:
+        load_blueprint_package(item["tenant_id"], item["blueprint_id"], item["blueprint_version"])
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     default_blueprint_repo.update_generation(generation_id, tenant_id=item["tenant_id"], status="profiling", error_summary=None)
     threading.Thread(
         target=_generation_background, args=(generation_id,),

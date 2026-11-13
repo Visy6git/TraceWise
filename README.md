@@ -17,8 +17,11 @@ TraceWise is a reviewer-gated 3-stage clinical verification platform for Periodi
    - After human review approves Stage 1, iterates claim-by-claim through the integrated **Agentic Harness** (`app/harness/`), supplying the detailed per-file `.md` summary of the mapped source file(s) alongside the full hierarchical claim details.
    - Generates `plan.md`, `analysis.py`, `tests/test_analysis.py`, executes commands inside the workspace with `SOURCE_INPUT_DIR` mounted read-only, validates SHA-256 immutability, and produces `result.json`.
    - Claims passing verification (parent + children) are marked **`verified`** in SQLite and highlighted green in the UI Claim Register.
-4. **Stage 3 — Independent Evaluation (`app/stages/stage_3_evaluation/`)**:
-   - Explicitly reserved as a **placeholder** stage in both backend API and React UI.
+   - Pausing is cooperative; resuming skips verified claims and continues at the first claim not verified. Failed claims can be retried individually from the Claim Inspector without reprocessing the other claims.
+4. **Stage 3 — Section 16.3 Understanding (`app/stages/stage_3_understanding/`)**:
+   - Builds a reusable blueprint candidate from the frozen, approved Stage 1 and Stage 2 artifacts. A reviewer must approve the candidate before it is available to generation.
+   - Validates required outputs and makes up to two bounded LLM repair passes when files are missing. Approval still requires trusted isolated reproduction-test evidence; an agent-authored claim or report is not sufficient.
+   - A stage can be rerun at its own approval boundary; Stage 3 can also be rerun after the run is complete. Reruns preserve earlier blueprint versions and require review of the new candidate. Earlier stages are not reopened after downstream stages have started.
 
 ## Repository Layout
 
@@ -36,7 +39,8 @@ app/
     strands_factory.py                 Strands Agent builder (Bedrock / LM Studio OpenAI tools)
     stage_1_claims/                    Per-file harness explorer + subsection Strands claim extractor
     stage_2_rules/                     Per-claim harness verification + sandbox execution
-    stage_3_evaluation/                Explicit Stage 3 placeholder
+    stage_3_evaluation/                Legacy independent-evaluation placeholder
+    stage_3_understanding/             Section 16.3 blueprint builder
 frontend/
   src/App.tsx                          TraceWise workbench UI
   src/components/                      ArtifactViewerModal, ClaimInspector, SourceDrawer, Modals

@@ -6,6 +6,7 @@ have learned missing business rationale or synthesize executable PV logic.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -288,22 +289,41 @@ def build_bootstrap_blueprint(
     }
 
 
-def validate_blueprint_package(workspace: Path) -> dict[str, Any]:
-    """Structural completeness check. Passing this check is not human approval."""
+def validate_blueprint_package(
+    workspace: Path,
+    *,
+    isolated_reproduction_test_passed: bool = False,
+) -> dict[str, Any]:
+    """Check package structure; only trusted executor results can satisfy test evidence."""
     required = [
         "blueprint.json", "section_model.json", "claim_catalog.json",
         "source_contracts.json", "retrieval_policies.json", "transformation_graph.json",
         "narrative_templates.json", "render_spec.json", "schema_drift_policy.json",
-        "reproduce_section.py", "README.md", "blueprint_validation.json",
+        "reproduce_section.py", "tests/test_reproduction_contract.py", "README.md",
     ]
     missing = [name for name in required if not (workspace / name).is_file()]
     issues: list[str] = []
-    report_path = workspace / "reproduction_test_report.json"
-    has_valid_reproduction_test = False
-    if report_path.is_file():
-        rep_data = _read_json(report_path, {})
-        if rep_data.get("reproduction_tested") is True or rep_data.get("status") in {"pass", "passed", "success"}:
-            has_valid_reproduction_test = True
+    for name in required:
+        path = workspace / name
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            issues.append(f"{name} is not valid UTF-8 text.")
+            continue
+        if not content.strip():
+            issues.append(f"{name} is empty.")
+        elif path.suffix.lower() == ".json":
+            try:
+                json.loads(content)
+            except json.JSONDecodeError as exc:
+                issues.append(f"{name} is not valid JSON: {exc.msg}.")
+        elif path.suffix.lower() == ".py":
+            try:
+                ast.parse(content, filename=name)
+            except SyntaxError as exc:
+                issues.append(f"{name} has a syntax error: {exc.msg}.")
 
     blueprint_path = workspace / "blueprint.json"
     if blueprint_path.exists():
@@ -312,8 +332,7 @@ def validate_blueprint_package(workspace: Path) -> dict[str, Any]:
             issues.append("Blueprint contains no claims.")
         if not model.get("section_structure"):
             issues.append("Blueprint contains no section structure.")
-        reproduction_tested = model.get("validation", {}).get("reproduction_tested") is True or has_valid_reproduction_test
-        if not reproduction_tested:
+        if not isolated_reproduction_test_passed:
             issues.append("No isolated reproduction test evidence is recorded.")
         if model.get("status") == "approved":
             issues.append("Agent must never set blueprint status to approved.")

@@ -26,6 +26,11 @@ export const generatorApi = {
       method: 'POST',
       body: JSON.stringify({ expected_input_manifest_hash: stage2Hash, idempotency_key: crypto.randomUUID() }),
     }),
+  rerunUnderstanding: (runId: string, stage2Hash: string) =>
+    request(`/api/runs/${encodeURIComponent(runId)}/stages/understanding/rerun`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_input_manifest_hash: stage2Hash, idempotency_key: crypto.randomUUID() }),
+    }),
   reviewUnderstanding: (runId: string, decision: 'approve' | 'request_changes', manifestHash: string, reviewerNote?: string) =>
     request(`/api/runs/${encodeURIComponent(runId)}/stages/understanding/review`, {
       method: 'POST',

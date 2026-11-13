@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from app.control_plane.run_state import RunState
-from app.harness.runner import run_harness_task
+from app.harness.runner import HarnessRunResult, run_harness_task
 from app.services.database import default_artifact_repo, default_run_repo
 from app.services.event_stream import default_broker
 from app.services.storage import default_storage
@@ -25,6 +25,8 @@ from app.stages.stage_3_understanding.artifact_builder import (
 )
 from app.stages.stage_3_understanding.prompts import STAGE_3_SYSTEM_PROMPT
 from app.schemas.blueprint import SectionReproductionBlueprint
+
+_STAGE3_REPAIR_ATTEMPTS = 2
 
 
 def _sha256(path: Path) -> str:
@@ -58,6 +60,84 @@ def _media_type(path: Path) -> str:
         ".json": "application/json", ".md": "text/markdown", ".py": "text/x-python",
         ".txt": "text/plain", ".yaml": "application/yaml",
     }.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _run_harness_with_package_repairs(
+    *,
+    run_id: str,
+    blueprint_id: str,
+    workspace: Path,
+    readonly_inputs: Path,
+    env_vars: dict[str, str],
+    goal: str,
+) -> tuple[HarnessRunResult, dict[str, Any], list[dict[str, Any]]]:
+    """Continue the authoring agent when validation finds required files missing."""
+    attempts: list[HarnessRunResult] = []
+    validation = validate_blueprint_package(workspace)
+
+    for attempt_number in range(_STAGE3_REPAIR_ATTEMPTS + 1):
+        if attempt_number == 0:
+            attempt_goal = goal
+            max_turns = 40
+        else:
+            missing = validation["missing_files"]
+            if not missing:
+                break
+            default_broker.emit_activity(
+                run_id,
+                "understanding",
+                "Continuing Stage 3 package authoring",
+                f"Validation found {len(missing)} required file(s) missing; requesting a bounded repair pass.",
+                kind="system",
+                agent="Section16_3UnderstandingOrchestrator",
+                status="warning",
+            )
+            attempt_goal = f"""Continue the existing Stage 3 authoring attempt for learning run {run_id} and blueprint {blueprint_id}.
+
+The previous harness response ended before these required workspace files were created:
+{chr(10).join(f"- {name}" for name in missing)}
+
+Create these files now in the existing writable workspace. Do not repeat broad input exploration or recreate files that already exist. Read only the smallest relevant existing workspace/read-only artifacts needed to ground each output. Preserve observed, inferred, and unknown distinctions. If evidence is insufficient, document the unknown and make reproduce_section.py fail closed for that mapping rather than inventing behavior.
+
+Do not run reproduction tests with the local harness shell. Do not claim test success or create reproduction_test_report.json; only an approved isolated executor can produce that evidence. Do not create or modify blueprint_validation.json; the orchestrator writes that report. Finish the missing files, update blueprint.json with grounded blockers, and stop."""
+            max_turns = 16
+
+        result = run_harness_task(
+            run_id=run_id,
+            stage="understanding",
+            agent_id=(
+                "Section16_3UnderstandingHarness"
+                if attempt_number == 0
+                else f"Section16_3UnderstandingRepair{attempt_number}"
+            ),
+            goal=attempt_goal,
+            workspace_dir=workspace,
+            readonly_dirs=[readonly_inputs],
+            env_vars=env_vars,
+            developer_instructions=STAGE_3_SYSTEM_PROMPT,
+            max_turns=max_turns,
+            emit_events=True,
+        )
+        attempts.append(result)
+        validation = validate_blueprint_package(workspace)
+
+    last_result = attempts[-1] if attempts else HarnessRunResult(
+        success=True,
+        final_response="",
+        turns=0,
+        tool_calls_count=0,
+    )
+    attempt_summaries = [
+        {
+            "attempt": index + 1,
+            "success": result.success,
+            "turns": result.turns,
+            "tool_calls": result.tool_calls_count,
+            "error": result.error,
+        }
+        for index, result in enumerate(attempts)
+    ]
+    return last_result, validation, attempt_summaries
 
 
 def _copy_package_to_blueprint_library(tenant_id: str, blueprint_id: str, version: int, workspace: Path) -> dict[str, Any]:
@@ -167,30 +247,26 @@ Blueprint version: {version}
 Approved Stage 1 manifest: {run.get('stage_1_manifest_hash')}
 Approved Stage 2 manifest: {expected_stage_2_manifest_hash}
 
-Read input_inventory.json first. Read the sanitized Stage 1/2 artifacts from the configured read-only directory. Row-level evidence payloads, raw source files and tool transcripts have intentionally been excluded. Use aggregate results, rule specs, provenance and source schema profiles. The pre-created blueprint.json is a conservative bootstrap, not a finished blueprint. Complete every required output file in your workspace as specified by your system prompt. Never modify read-only directories. Preserve observed/inferred/unknown. Write reproduce_section.py and tests, but do not claim tests passed unless executed through a separately isolated execution backend. End by updating blueprint.json and blueprint_validation.json. Agent must not set status=approved.
+Read input_inventory.json first. Read the sanitized Stage 1/2 artifacts from the configured read-only directory. Row-level evidence payloads, raw source files and tool transcripts have intentionally been excluded. Use aggregate results, rule specs, provenance and source schema profiles. The pre-created blueprint.json is a conservative bootstrap, not a finished blueprint. Complete every required output file in your workspace as specified by your system prompt. Never modify read-only directories. Preserve observed/inferred/unknown. Write reproduce_section.py and tests; if a mapping is unknown, make the runtime fail closed for it. Do not claim tests passed unless executed through a separately isolated execution backend. Do not create blueprint_validation.json; the orchestrator writes it. Agent must not set status=approved.
 """
 
     default_broker.emit_stage_update(run_id, "understanding", "running", progress=12, attempt_id=attempt_id)
-    harness = run_harness_task(
+    harness, validation, harness_attempts = _run_harness_with_package_repairs(
         run_id=run_id,
-        stage="understanding",
-        agent_id="Section16_3UnderstandingHarness",
-        goal=goal,
-        workspace_dir=workspace,
-        readonly_dirs=[readonly_inputs],
+        blueprint_id=blueprint_id,
+        workspace=workspace,
+        readonly_inputs=readonly_inputs,
         env_vars={"TRACEWISE_STAGE": "understanding", "TRACEWISE_BLUEPRINT_ID": blueprint_id},
-        developer_instructions=STAGE_3_SYSTEM_PROMPT,
-        max_turns=40,
-        emit_events=True,
+        goal=goal,
     )
 
-    validation = validate_blueprint_package(workspace)
     (workspace / "blueprint_validation.json").write_text(json.dumps({
         **validation,
         "harness_success": harness.success,
-        "harness_turns": harness.turns,
-        "harness_tool_calls": harness.tool_calls_count,
+        "harness_turns": sum(item["turns"] for item in harness_attempts),
+        "harness_tool_calls": sum(item["tool_calls"] for item in harness_attempts),
         "harness_error": harness.error,
+        "harness_attempts": harness_attempts,
         "input_manifest_hashes": {
             "stage_1": run.get("stage_1_manifest_hash"),
             "stage_2": expected_stage_2_manifest_hash,
@@ -239,21 +315,40 @@ Read input_inventory.json first. Read the sanitized Stage 1/2 artifacts from the
     manifest_hash = lib_manifest["manifest_hash"]
     default_run_repo.set_manifest_hash(run_id, "evaluation", manifest_hash)
     latest = default_run_repo.get_run(run_id)
+    package_ready = harness.success and validation["status"] != "blocked"
+    failure_detail = None
+    if not package_ready:
+        blockers = validation["missing_files"] + validation["issues"]
+        failure_detail = harness.error or (
+            "Stage 3 package validation is blocked: " + "; ".join(blockers)
+        )
     default_run_repo.transition(
         run_id=run_id, expected_version=latest["version"],
-        new_state=RunState.EVALUATION_AWAITING_REVIEW, active_stage=None,
+        new_state=RunState.EVALUATION_AWAITING_REVIEW if package_ready else RunState.FAILED,
+        active_stage=None if package_ready else "evaluation",
     )
-    default_broker.emit_stage_update(run_id, "understanding", "review", progress=100, attempt_id=attempt_id)
+    default_broker.emit_stage_update(
+        run_id, "understanding", "review" if package_ready else "error",
+        progress=100, attempt_id=attempt_id,
+    )
     default_broker.emit_activity(
         run_id, "understanding", "Stage 3 blueprint candidate ready for reviewer",
-        "Reviewer must inspect unresolved methodology, source contracts, schema drift policy and reproduction tests. Approval is not automatic.",
-        kind="gate", status="warning" if bp_data["status"] != "ready_for_review" else "done",
+        (
+            "Reviewer must inspect unresolved methodology, source contracts, schema drift policy and reproduction tests. Approval is not automatic."
+            if package_ready
+            else failure_detail or "Stage 3 package validation failed."
+        ),
+        kind="gate" if package_ready else "warning",
+        status="warning" if not package_ready else "done",
     )
-    default_broker.emit_run_finished(run_id, "understanding", {
-        "blueprint_id": blueprint_id, "blueprint_version": version,
-        "blueprint_status": bp_data["status"], "manifest_hash": manifest_hash,
-        "harness_success": harness.success, "validation_status": validation["status"],
-    })
+    if package_ready:
+        default_broker.emit_run_finished(run_id, "understanding", {
+            "blueprint_id": blueprint_id, "blueprint_version": version,
+            "blueprint_status": bp_data["status"], "manifest_hash": manifest_hash,
+            "harness_success": harness.success, "validation_status": validation["status"],
+        })
+    else:
+        default_broker.emit_run_error(run_id, "understanding", failure_detail or "Stage 3 failed")
 
     # BlueprintRepository is imported lazily to avoid coupling the stage to DB init.
     from app.services.blueprint_repository import default_blueprint_repo
@@ -263,9 +358,11 @@ Read input_inventory.json first. Read the sanitized Stage 1/2 artifacts from the
         manifest_hash=manifest_hash, manifest=lib_manifest,
     )
     return {
-        "run_id": run_id, "stage": "understanding", "status": "awaiting_review",
+        "run_id": run_id, "stage": "understanding",
+        "status": "awaiting_review" if package_ready else "failed",
         "blueprint_id": blueprint_id, "blueprint_version": version,
         "blueprint_status": bp_data["status"], "manifest_hash": manifest_hash,
         "harness_success": harness.success, "validation": validation,
+        "error": failure_detail,
         "artifact_count": len(package_entries),
     }

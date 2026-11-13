@@ -20,18 +20,71 @@ class SecurityError(RuntimeError):
     """Raised when an output artifact or operation violates a security boundary."""
 
 
-def _load_blueprint(tenant_id: str, blueprint_id: str, version: int) -> tuple[dict[str, Any], dict[str, Any]]:
+def load_blueprint_package(
+    tenant_id: str,
+    blueprint_id: str,
+    version: int,
+    *,
+    require_approved: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     record = default_blueprint_repo.get(tenant_id, blueprint_id, version)
-    if not record or record.get("version_status") != "approved":
+    if not record:
+        raise ValueError(f"Blueprint {blueprint_id} version {version} not found")
+    if require_approved and record.get("version_status") != "approved":
         raise ValueError("Only an explicitly approved blueprint version can be used for generation")
-    manifest = record["manifest"]
+    manifest = record.get("manifest") or {}
     prefix = f"blueprints-{tenant_id}/{blueprint_id}/versions/v{version:03d}"
-    bp_obj = next((item for item in manifest.get("files", []) if item.get("path") == "blueprint.json"), None)
-    script_obj = next((item for item in manifest.get("files", []) if item.get("path") == "reproduce_section.py"), None)
-    if not bp_obj or not script_obj:
-        raise ValueError("Approved blueprint package is incomplete (blueprint.json or reproduce_section.py missing)")
-    blueprint = json.loads(default_storage.read_text(f"{prefix}/blueprint.json"))
-    return blueprint, {"manifest": manifest, "prefix": prefix, "blueprint_obj": bp_obj, "script_obj": script_obj}
+    files = {
+        item.get("path"): item
+        for item in manifest.get("files", [])
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    required = ("blueprint.json", "reproduce_section.py")
+    missing = [path for path in required if path not in files]
+    if missing:
+        raise ValueError(
+            "Blueprint package is incomplete; missing required runtime file(s): "
+            f"{', '.join(missing)}. Create and approve a complete Stage 3 blueprint before generation."
+        )
+    if not require_approved and record.get("version_status") not in {"ready_for_review", "approved"}:
+        raise ValueError(
+            "Blueprint candidate has not passed Stage 3 structural validation and cannot be approved"
+        )
+
+    try:
+        blueprint_bytes = default_storage.read_bytes(f"{prefix}/blueprint.json")
+        script_bytes = default_storage.read_bytes(f"{prefix}/reproduce_section.py")
+    except FileNotFoundError as exc:
+        raise ValueError(
+            "Blueprint package manifest references a missing runtime file. Create and approve "
+            "a complete Stage 3 blueprint before generation."
+        ) from exc
+
+    bp_obj = files["blueprint.json"]
+    script_obj = files["reproduce_section.py"]
+    for path, content in (
+        ("blueprint.json", blueprint_bytes),
+        ("reproduce_section.py", script_bytes),
+    ):
+        expected_hash = files[path].get("sha256")
+        if expected_hash and hashlib.sha256(content).hexdigest() != expected_hash:
+            raise ValueError(f"Blueprint package integrity check failed for {path}")
+    if not script_bytes.strip():
+        raise ValueError("Blueprint package contains an empty reproduce_section.py")
+
+    blueprint = json.loads(blueprint_bytes)
+    validation = blueprint.get("validation") or {}
+    if blueprint.get("status") not in {"ready_for_review", "approved"} or validation.get("status") == "blocked":
+        raise ValueError(
+            "Blueprint failed Stage 3 structural validation and cannot be approved or used "
+            "for generation. Create and approve a complete blueprint candidate."
+        )
+    return blueprint, {
+        "manifest": manifest,
+        "prefix": prefix,
+        "blueprint_obj": bp_obj,
+        "script_obj": script_obj,
+    }
 
 
 def _validate_output_file(path: Path, name: str, workspace: Path) -> bytes:
@@ -68,7 +121,9 @@ def run_generation(generation_id: str) -> dict[str, Any]:
     if not record:
         raise ValueError(f"Generation run {generation_id} not found")
     tenant_id = record["tenant_id"]
-    blueprint, pkg = _load_blueprint(tenant_id, record["blueprint_id"], record["blueprint_version"])
+    blueprint, pkg = load_blueprint_package(
+        tenant_id, record["blueprint_id"], record["blueprint_version"]
+    )
     run_dir = default_storage.run_dir(generation_id)
     source_dir = run_dir / "input" / "sources"
     workspace = run_dir / "workspace"

@@ -92,12 +92,22 @@ export const api = {
       `/api/runs/${encodeURIComponent(runId)}/stages/${stage}/pause`,
       { method: 'POST' },
     ),
-  rerunStage: (runId: string, stage: StageId, expectedInputManifestHash: string, idempotencyKey: string) =>
+  rerunStage: (
+    runId: string,
+    stage: StageId,
+    expectedInputManifestHash: string,
+    idempotencyKey: string,
+    claimId?: string,
+  ) =>
     request<{ run_id: string; stage: StageId; status: string; accepted: boolean; message: string }>(
       `/api/runs/${encodeURIComponent(runId)}/stages/${stage}/rerun`,
       {
         method: 'POST',
-        body: JSON.stringify({ expected_input_manifest_hash: expectedInputManifestHash, idempotency_key: idempotencyKey }),
+        body: JSON.stringify({
+          expected_input_manifest_hash: expectedInputManifestHash,
+          idempotency_key: idempotencyKey,
+          ...(claimId ? { claim_id: claimId } : {}),
+        }),
       },
     ),
   reviewStage: (runId: string, stage: StageId, decision: 'approve' | 'request_changes', expectedManifestHash: string, reviewerNote?: string) =>

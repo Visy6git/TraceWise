@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from io import StringIO
 from pathlib import Path
 
@@ -208,6 +209,70 @@ def test_stage2_marks_discrepancy_when_reported_mismatch(isolated_env, tmp_path:
     c2_after = claim_repo.get_claim(run["run_id"], "CLM-0002")
     assert c2_after["status"] == "discrepancy"
     assert c2_after["verification_result"]["parent_computed_value"] == 12
+
+
+def test_stage2_retries_only_the_selected_failed_claim(isolated_env, tmp_path: Path):
+    run_repo = isolated_env["run_repo"]
+    claim_repo = isolated_env["claim_repo"]
+    storage = isolated_env["storage"]
+
+    doc_path, source_paths = create_synthetic_pbrer_dataset(tmp_path / "inputs_targeted_retry")
+    manifest_hash = hashlib.sha256(
+        doc_path.read_bytes() + b"".join(path.read_bytes() for path in source_paths)
+    ).hexdigest()
+    run = run_repo.create_run(
+        run_id="run-stage2-targeted-retry",
+        run_name="Stage 2 Targeted Retry",
+        target_object_id=str(doc_path),
+        source_object_ids=[str(path) for path in source_paths],
+        input_manifest_hash=manifest_hash,
+    )
+    run_repo.transition(run["run_id"], run["version"], RunState.CLAIMS_RUNNING, active_stage="claims")
+    stage_1_result = run_claims_stage(run["run_id"], manifest_hash)
+
+    current = run_repo.get_run(run["run_id"])
+    run_repo.record_approval(
+        run_id=run["run_id"],
+        stage="claims",
+        reviewer_id="reviewer-1",
+        decision="approve",
+        expected_version=current["version"],
+        expected_manifest_hash=stage_1_result["stage_1_manifest_hash"],
+    )
+    current = run_repo.get_run(run["run_id"])
+    run_repo.transition(run["run_id"], current["version"], RunState.RULES_RUNNING, active_stage="rules")
+
+    first_claim = claim_repo.get_claim(run["run_id"], "CLM-0001")
+    first_claim["status"] = "verified"
+    first_claim["verification_result"] = {"verified": True, "status": "verified"}
+    claim_repo.save_claim(run["run_id"], first_claim)
+
+    failed_claim = claim_repo.get_claim(run["run_id"], "CLM-0002")
+    failed_claim["status"] = "failed"
+    failed_claim["verification_result"] = {"verified": False, "status": "failed"}
+    claim_repo.save_claim(run["run_id"], failed_claim)
+
+    result = run_rules_stage(
+        run["run_id"],
+        stage_1_result["stage_1_manifest_hash"],
+        claim_id="CLM-0002",
+    )
+
+    assert result["verified_count"] == 2
+    assert result["discrepancy_count"] == 0
+    assert result["failed_count"] == 0
+    first_claim_after = claim_repo.get_claim(run["run_id"], "CLM-0001")
+    assert first_claim_after["verification_result"] == {
+        "verified": True,
+        "status": "verified",
+    }
+    assert claim_repo.get_claim(run["run_id"], "CLM-0002")["status"] == "verified"
+
+    manifest = json.loads(
+        storage.read_text(f"default/{run['run_id']}/stage_2_rules/manifest.json")
+    )
+    assert manifest["verified_count"] == 2
+    assert any("CLM-0002" in path for path in manifest["artifact_hashes"])
 
 
 def test_stage2_persists_harness_diagnostics_when_no_analysis_is_created(

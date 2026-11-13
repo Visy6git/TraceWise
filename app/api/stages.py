@@ -14,7 +14,7 @@ from app.control_plane.run_state import (
 )
 from app.schemas.messages import StageName
 from app.schemas.run import StageActionResponse, StageStartRequest
-from app.services.database import default_run_repo
+from app.services.database import default_claim_repo, default_run_repo
 from app.services.event_stream import default_broker
 from app.services.logging_config import get_run_logger
 from app.stages.stage_1_claims.orchestrator import run_claims_stage
@@ -35,12 +35,19 @@ _RUNNING_STATES = {
 }
 
 
-def _execute_stage_background(run_id: str, stage: str, manifest: str) -> None:
+def _execute_stage_background(
+    run_id: str, stage: str, manifest: str, claim_id: str | None = None
+) -> None:
     """Run an orchestrator off the request thread; stream progress and failures."""
     logger = get_run_logger(run_id, stage)
     try:
         runner = _STAGE_RUNNERS[stage]
-        runner(run_id, manifest)
+        if claim_id is not None:
+            if stage != "rules":
+                raise ValueError("Claim-specific retries are only supported for the rules stage")
+            run_rules_stage(run_id, manifest, claim_id=claim_id)
+        else:
+            runner(run_id, manifest)
     except Exception as exc:  # noqa: BLE001 - surface to the UI, never crash silently
         logger.exception("Stage %s failed for run %s", stage, run_id)
         default_broker.emit_stage_update(run_id, stage, "error", progress=100)
@@ -73,6 +80,11 @@ def start_stage(run_id: str, stage: StageName, payload: StageStartRequest) -> St
     run = default_run_repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    if payload.claim_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Claim-specific retries are only supported through the stage rerun endpoint",
+        )
 
     # Stage 3 evaluation is superseded by Section 16.3 Understanding
     if stage == StageName.evaluation:
@@ -137,6 +149,12 @@ def rerun_stage(run_id: str, stage: StageName, payload: StageStartRequest) -> St
     if not run:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
+    if payload.claim_id is not None and stage != StageName.rules:
+        raise HTTPException(
+            status_code=400,
+            detail="Claim-specific retries are only supported for the rules stage",
+        )
+
     if stage == StageName.evaluation:
         return StageActionResponse(
             run_id=run_id,
@@ -145,6 +163,16 @@ def rerun_stage(run_id: str, stage: StageName, payload: StageStartRequest) -> St
             accepted=False,
             message="Stage 3 evaluation placeholder is superseded by Section 16.3 Understanding. Use POST /api/runs/{run_id}/stages/understanding/rerun.",
         )
+
+    if payload.claim_id is not None:
+        claim = default_claim_repo.get_claim(run_id, payload.claim_id)
+        if not claim:
+            raise HTTPException(status_code=404, detail=f"Claim {payload.claim_id} not found")
+        if claim.get("status") != "failed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Claim {payload.claim_id} can only be retried when its status is failed",
+            )
 
     expected_manifest = (
         run.get("input_manifest_hash")
@@ -181,7 +209,7 @@ def rerun_stage(run_id: str, stage: StageName, payload: StageStartRequest) -> St
 
     thread = threading.Thread(
         target=_execute_stage_background,
-        args=(run_id, stage.value, payload.expected_input_manifest_hash),
+        args=(run_id, stage.value, payload.expected_input_manifest_hash, payload.claim_id),
         name=f"rerun-{stage.value}-{run_id[:8]}",
         daemon=True,
     )

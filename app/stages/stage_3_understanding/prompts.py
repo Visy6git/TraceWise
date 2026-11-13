@@ -80,7 +80,8 @@ For the complete Section 16.3, encode:
     joins, derived-value dependencies and required output artifacts. Use
     synthetic/non-identifiable fixtures only.
 12. README.md — architecture, invocation contract, limitations and update policy.
-13. blueprint_validation.json — check results, unresolved items, test status.
+13. blueprint_validation.json is written by the orchestrator after validation.
+    Do not create or modify this report.
 
 ## BUILD PROCESS
 - First inventory all inputs and manifests. Record exact hashes and logical paths.
@@ -99,6 +100,9 @@ For the complete Section 16.3, encode:
   population differ, block generation and request reviewer approval.
 - Run tests only in an approved isolated execution service. The current local
   harness shell is development-only; do not imply it is a production sandbox.
+- Create every required file even when some methodology is unknown. Encode
+  unknown mappings as explicit blockers and make the reproduction entrypoint
+  fail closed rather than inventing fields, rules, or report values.
 - If a requirement cannot be grounded in artifacts, write an explicit open
   question and set validation.status to blocked or needs_review.
 

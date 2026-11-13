@@ -83,12 +83,17 @@ def test_rework_requires_explicit_reopened_stage():
         validate_stage_start(RunState.CHANGES_REQUESTED, "claims", rework_stage="rules")
 
 
-def test_failed_run_is_recoverable_but_complete_is_terminal():
+def test_failed_run_is_recoverable_and_only_stage3_reruns_after_completion():
     # A failed run can re-enter the running state of the stage that failed.
     validate_transition(RunState.FAILED, RunState.RULES_RUNNING)
-    # Terminal states stay terminal.
+    # A completed run can only reopen Stage 3, not invalidate approved upstream stages.
+    validate_stage_rerun(RunState.COMPLETE, "evaluation")
+    validate_transition(RunState.COMPLETE, RunState.EVALUATION_RUNNING)
     with pytest.raises(InvalidTransition):
-        validate_transition(RunState.COMPLETE, RunState.CLAIMS_RUNNING)
+        validate_stage_rerun(RunState.COMPLETE, "claims")
+    with pytest.raises(InvalidTransition):
+        validate_transition(RunState.COMPLETE, RunState.RULES_RUNNING)
+    # Cancelled runs remain terminal.
     with pytest.raises(InvalidTransition):
         validate_transition(RunState.CANCELLED, RunState.CLAIMS_RUNNING)
 
@@ -99,6 +104,15 @@ def test_rerun_allowed_only_from_failed_or_awaiting_review():
     # Rerun a stage that is awaiting review (e.g. all claims failed verification).
     validate_stage_rerun(RunState.RULES_AWAITING_REVIEW, "rules")
     validate_stage_rerun(RunState.CLAIMS_AWAITING_REVIEW, "claims")
+
+
+def test_approved_stage_can_be_rerun_at_its_approval_boundary():
+    validate_stage_rerun(RunState.CLAIMS_APPROVED, "claims")
+    validate_stage_rerun(RunState.RULES_APPROVED, "rules")
+    with pytest.raises(InvalidTransition):
+        validate_stage_rerun(RunState.CLAIMS_APPROVED, "rules")
+    with pytest.raises(InvalidTransition):
+        validate_stage_rerun(RunState.RULES_APPROVED, "claims")
 
 
 def test_pause_allowed_only_while_running():

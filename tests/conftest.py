@@ -60,6 +60,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     ]
     targets_claim = [
         "app.api.claims",
+        "app.api.stages",
         "app.stages.stage_1_claims.orchestrator",
         "app.stages.stage_1_claims.claim_tools",
         "app.stages.stage_2_rules.orchestrator",
@@ -81,6 +82,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         "app.stages.stage_1_claims.source_explorer",
         "app.stages.stage_1_claims.orchestrator",
         "app.stages.stage_2_rules.orchestrator",
+        "app.runtime.generation_service",
     ]
     targets_broker = [
         "app.api.stages",
@@ -114,6 +116,8 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
 
     bp_api = importlib.import_module("app.api.blueprints")
     monkeypatch.setattr(bp_api, "default_blueprint_repo", blueprint_repo)
+    generation_service = importlib.import_module("app.runtime.generation_service")
+    monkeypatch.setattr(generation_service, "default_blueprint_repo", blueprint_repo)
 
     eval_api = importlib.import_module("app.api.evaluation")
     monkeypatch.setattr(eval_api, "default_eval_repo", eval_repo)
