@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import artifacts, claims, evaluation, events, review, runs, sections, sources, stages
+from app.api import artifacts, blueprints, claims, evaluation, events, review, runs, sections, sources, stages
 from app.config import (
     BEDROCK_ENABLED,
     BEDROCK_MODEL_ID,
@@ -17,7 +17,7 @@ from app.config import (
 app = FastAPI(
     title="TraceWise API",
     version="0.2.0",
-    description="Three-stage PBRER evidence extraction and Python rule verification pipeline.",
+    description="Three-stage PBRER evidence extraction, Python rule verification, and Section 16.3 blueprint pipeline.",
 )
 
 app.add_middleware(
@@ -33,6 +33,7 @@ app.include_router(runs.router, prefix="/api")
 app.include_router(sections.router, prefix="/api")
 app.include_router(sources.router, prefix="/api")
 app.include_router(evaluation.router, prefix="/api")
+app.include_router(blueprints.router, prefix="/api")
 app.include_router(stages.router, prefix="/api")
 app.include_router(claims.router, prefix="/api")
 app.include_router(artifacts.router, prefix="/api")
@@ -52,6 +53,7 @@ def _runtime_summary() -> dict[str, object]:
         "lmstudio": "enabled" if (LMSTUDIO_ENABLED or active_provider in {"lmstudio", "openai"}) else "disabled",
         "model_id": active_model,
         "stage_3_placeholder": True,
+        "stage_3_understanding": True,
     }
 
 

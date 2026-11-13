@@ -15,6 +15,7 @@ from app.services.database import (
     EvaluationRepository,
     RunRepository,
 )
+from app.services.blueprint_repository import BlueprintRepository
 from app.services.event_stream import EventBroker
 from app.services.storage import StorageService
 
@@ -28,18 +29,21 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     claim_repo = ClaimRepository(db)
     artifact_repo = ArtifactRepository(db)
     eval_repo = EvaluationRepository(db)
+    blueprint_repo = BlueprintRepository(db)
     broker = EventBroker()
 
     # Patch services module singletons
     import app.services.database as db_mod
     import app.services.event_stream as ev_mod
     import app.services.storage as st_mod
+    import app.services.blueprint_repository as bp_mod
 
     monkeypatch.setattr(db_mod, "default_db", db)
     monkeypatch.setattr(db_mod, "default_run_repo", run_repo)
     monkeypatch.setattr(db_mod, "default_claim_repo", claim_repo)
     monkeypatch.setattr(db_mod, "default_artifact_repo", artifact_repo)
     monkeypatch.setattr(db_mod, "default_eval_repo", eval_repo)
+    monkeypatch.setattr(bp_mod, "default_blueprint_repo", blueprint_repo)
     monkeypatch.setattr(st_mod, "default_storage", storage)
     monkeypatch.setattr(ev_mod, "default_broker", broker)
 
@@ -50,6 +54,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         "app.api.review",
         "app.api.claims",
         "app.api.sources",
+        "app.api.blueprints",
         "app.stages.stage_1_claims.orchestrator",
         "app.stages.stage_2_rules.orchestrator",
     ]
@@ -71,6 +76,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         "app.api.claims",
         "app.api.sources",
         "app.api.sections",
+        "app.api.blueprints",
         "app.stages.stage_1_claims.document_understanding",
         "app.stages.stage_1_claims.source_explorer",
         "app.stages.stage_1_claims.orchestrator",
@@ -78,6 +84,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     ]
     targets_broker = [
         "app.api.stages",
+        "app.api.blueprints",
         "app.harness.runner",
         "app.stages.stage_1_claims.orchestrator",
         "app.stages.stage_1_claims.source_explorer",
@@ -105,6 +112,9 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         mod = importlib.import_module(mod_name)
         monkeypatch.setattr(mod, "default_broker", broker)
 
+    bp_api = importlib.import_module("app.api.blueprints")
+    monkeypatch.setattr(bp_api, "default_blueprint_repo", blueprint_repo)
+
     eval_api = importlib.import_module("app.api.evaluation")
     monkeypatch.setattr(eval_api, "default_eval_repo", eval_repo)
 
@@ -126,6 +136,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         "claim_repo": claim_repo,
         "artifact_repo": artifact_repo,
         "eval_repo": eval_repo,
+        "blueprint_repo": blueprint_repo,
         "broker": broker,
         "tmp_path": tmp_path,
     }

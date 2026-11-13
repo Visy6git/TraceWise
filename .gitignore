@@ -25,7 +25,7 @@ credentials*.json
 
 # PHI, source uploads, runtime workspaces and artifacts must never enter Git
 .tracewise-runtime/
-runtime/
+/runtime/
 runs/
 uploads/
 artifacts/

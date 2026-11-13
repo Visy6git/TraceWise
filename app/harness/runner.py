@@ -43,6 +43,44 @@ def _snapshot_hashes(dirs: list[Path]) -> dict[str, str]:
     return hashes
 
 
+def _sanitize_tool_payload(tool_name: str, args: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(args, dict):
+        return {}
+    blocked_keys = {
+        "rows", "records", "sample_rows", "sample_values", "unique_values",
+        "raw_rows", "matched_rows", "claim_data", "patient_data", "person_data",
+        "case_data", "patients", "subjects", "cases", "patient_list", "raw_data",
+        "data_rows", "password", "secret", "token",
+    }
+    sanitized: dict[str, Any] = {}
+    for k, v in args.items():
+        if k.lower() in blocked_keys:
+            sanitized[k] = "<redacted>"
+            continue
+        if tool_name in {"write_file", "edit_file"} and k in {"content", "replacement", "target"}:
+            str_val = str(v)
+            if len(str_val) > 200:
+                sanitized[k] = str_val[:180] + f"... <truncated {len(str_val)} chars>"
+            else:
+                sanitized[k] = str_val
+        elif isinstance(v, (str, bytes)):
+            str_val = str(v)
+            sanitized[k] = str_val[:240] + ("..." if len(str_val) > 240 else "")
+        elif isinstance(v, list) and len(v) > 20:
+            sanitized[k] = [str(x)[:80] for x in v[:10]] + [f"... <{len(v) - 10} more items>"]
+        elif isinstance(v, dict):
+            sanitized[k] = {str(dk): str(dv)[:80] for dk, dv in list(v.items())[:10]}
+        else:
+            sanitized[k] = v
+    return sanitized
+
+
+def _sanitize_tool_output(output: str) -> str:
+    if not output:
+        return ""
+    return str(output)[:400]
+
+
 async def run_harness_task_async(
     *,
     run_id: str,
@@ -105,23 +143,24 @@ async def run_harness_task_async(
                     if turns == 0:
                         turns = 1
                     tool_name = str(event.data.get("name", ""))
-                    args = event.data.get("arguments") or {}
+                    raw_args = event.data.get("arguments") or {}
                     call_id = str(event.data.get("call_id", ""))
+                    safe_args = _sanitize_tool_payload(tool_name, raw_args)
                     tool_history.append(
-                        {"event": "start", "call_id": call_id, "tool": tool_name, "args": args}
+                        {"event": "start", "call_id": call_id, "tool": tool_name, "args": safe_args}
                     )
                     if emit_events:
                         default_broker.emit_tool_call(
                             run_id,
                             tool_call_id=call_id,
                             tool_name=tool_name,
-                            args=args,
+                            args=safe_args,
                         )
                         default_broker.emit_activity(
                             run_id=run_id,
                             stage=stage,
                             title=f"{agent_id}: {tool_name}",
-                            detail=str(args)[:140],
+                            detail=str(safe_args)[:140],
                             kind="tool",
                             agent=agent_id,
                         )
@@ -132,7 +171,7 @@ async def run_harness_task_async(
                     meta = event.data.get("metadata") or {}
                     if ok and tool_name in {"write_file", "edit_file"} and meta.get("path"):
                         files_written.append(str(meta["path"]))
-                    output_preview = str(event.data.get("output") or "")[:600]
+                    output_preview = _sanitize_tool_output(str(event.data.get("output") or ""))
                     tool_history.append(
                         {
                             "event": "complete",

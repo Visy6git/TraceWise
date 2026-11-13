@@ -19,14 +19,14 @@ from app.services.event_stream import default_broker
 from app.services.logging_config import get_run_logger
 from app.stages.stage_1_claims.orchestrator import run_claims_stage
 from app.stages.stage_2_rules.orchestrator import run_rules_stage
-from app.stages.stage_3_evaluation.placeholder import run_evaluation_stage
+from app.stages.stage_3_understanding.orchestrator import run_understanding_stage
 
 router = APIRouter(tags=["stages"])
 
 _STAGE_RUNNERS = {
     "claims": run_claims_stage,
     "rules": run_rules_stage,
-    "evaluation": run_evaluation_stage,
+    "evaluation": run_understanding_stage,
 }
 _RUNNING_STATES = {
     "claims": RunState.CLAIMS_RUNNING,
@@ -74,15 +74,14 @@ def start_stage(run_id: str, stage: StageName, payload: StageStartRequest) -> St
     if not run:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
-    # Stage 3 is explicitly reserved as a placeholder
+    # Stage 3 evaluation is superseded by Section 16.3 Understanding
     if stage == StageName.evaluation:
-        res = run_evaluation_stage(run_id)
         return StageActionResponse(
             run_id=run_id,
             stage=stage,
             status="placeholder",
             accepted=False,
-            message=res["message"],
+            message="Stage 3 evaluation placeholder is superseded by Section 16.3 Understanding. Use POST /api/runs/{run_id}/stages/understanding/start.",
         )
 
     expected_manifest = (
@@ -139,13 +138,12 @@ def rerun_stage(run_id: str, stage: StageName, payload: StageStartRequest) -> St
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
     if stage == StageName.evaluation:
-        res = run_evaluation_stage(run_id)
         return StageActionResponse(
             run_id=run_id,
             stage=stage,
             status="placeholder",
             accepted=False,
-            message=res["message"],
+            message="Stage 3 evaluation placeholder is superseded by Section 16.3 Understanding. Use POST /api/runs/{run_id}/stages/understanding/rerun.",
         )
 
     expected_manifest = (

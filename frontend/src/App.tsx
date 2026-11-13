@@ -17,6 +17,11 @@ import { SourceDrawer } from './components/SourceDrawer';
 import { demoRun } from './data/demo';
 import { useAguiEvents } from './lib/agui';
 import { api, apiMode, type RunSummary } from './lib/api';
+import { WorkspaceModeTabs, type WorkspaceMode } from './components/WorkspaceModeTabs';
+import { Stage3BlueprintPanel } from './components/Stage3BlueprintPanel';
+import { SectionGeneratorWorkspace } from './components/SectionGeneratorWorkspace';
+import { generatorApi } from './lib/generatorApi';
+import './styles/generator.css';
 import type {
   ActivityItem,
   ArtifactItem,
@@ -36,8 +41,18 @@ const stageOrder: StageId[] = ['claims', 'rules', 'evaluation'];
 const stageLabel: Record<StageId, string> = {
   claims: 'Claims & exploration',
   rules: 'Rules engineering',
-  evaluation: 'Stage 3 evaluation',
+  evaluation: 'Section 16.3 Understanding',
 };
+
+function mapLegacyEvaluationStatusToUnderstanding(status: string, activeStage?: string | null): string {
+  const s = status.toUpperCase().replaceAll(' ', '_');
+  if (s === 'RULES_APPROVED' || s.includes('RULES_APPROVED')) return 'ready';
+  if (s === 'EVALUATION_RUNNING' || s.includes('UNDERSTANDING_RUNNING')) return 'running';
+  if (s === 'EVALUATION_AWAITING_REVIEW' || s.includes('UNDERSTANDING_REVIEW')) return 'review';
+  if (s === 'COMPLETE' || s.includes('APPROVED')) return 'approved';
+  if ((s === 'FAILED' || s.includes('ERROR')) && activeStage === 'evaluation') return 'error';
+  return 'locked';
+}
 
 function cx(...parts: Array<string | false | undefined>) {
   return parts.filter(Boolean).join(' ');
@@ -293,7 +308,32 @@ function mapServerStatus(
   const interruptedIndex = interruptedStage ? stageOrder.indexOf(interruptedStage) : -1;
   const stages = structuredClone(demoRun.stages).map(stage => {
     if (stage.id === 'evaluation') {
-      return { ...stage, status: 'placeholder' as const, progress: 0, placeholder: true };
+      const isApproved = state?.completed.includes(stage.id) || summary.status === 'COMPLETE';
+      const isReview = state?.review === stage.id || summary.status === 'EVALUATION_AWAITING_REVIEW';
+      const isRunningNow = (isRunning && state?.active === stage.id) || summary.status === 'EVALUATION_RUNNING';
+      const isReadyNow = state?.ready === stage.id || summary.status === 'RULES_APPROVED';
+      const isError = summary.status === 'FAILED' && summary.active_stage === 'evaluation';
+      const isPaused = summary.status === 'PAUSED' && summary.active_stage === 'evaluation';
+      return {
+        ...stage,
+        title: 'Section 16.3 Understanding',
+        subtitle: 'Reproduction blueprint builder',
+        status: isApproved
+          ? ('approved' as const)
+          : isReview
+            ? ('review' as const)
+            : isRunningNow
+              ? ('running' as const)
+              : isError
+                ? ('error' as const)
+                : isPaused
+                  ? ('paused' as const)
+                  : isReadyNow
+                    ? ('ready' as const)
+                    : ('locked' as const),
+        progress: isApproved || isReview ? 100 : isRunningNow ? 40 : 0,
+        placeholder: false,
+      };
     }
     if (interruptedStage && interruptedStatus) {
       const idx = stageOrder.indexOf(stage.id);
@@ -366,6 +406,29 @@ function App() {
   const uploadInput = useRef<HTMLInputElement>(null);
   const sourceInput = useRef<HTMLInputElement>(null);
   const lastRefreshRef = useRef(0);
+
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('learning');
+  const [approvedBlueprintAvailable, setApprovedBlueprintAvailable] = useState(false);
+
+  useEffect(() => {
+    if (!apiMode) return;
+    let cancelled = false;
+    const refresh = () =>
+      generatorApi
+        .listBlueprints()
+        .then(items => {
+          if (!cancelled) setApprovedBlueprintAvailable(items.length > 0);
+        })
+        .catch(() => {
+          if (!cancelled) setApprovedBlueprintAvailable(false);
+        });
+    void refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   async function loadSessionHistory() {
     setHistoryLoading(true);
@@ -617,7 +680,32 @@ function App() {
 
   async function beginLiveStage(stageId: StageId) {
     if (stageId === 'evaluation') {
-      setNotice('Stage 3 (Independent Evaluation & Validation) is currently left as a placeholder.');
+      if (!run.runId) {
+        setNotice('Create a run with your DOCX and XLSX/CSV files first.');
+        return;
+      }
+      setLoadingStage(true);
+      try {
+        const summary = await api.getRun(run.runId);
+        const mapped = mapServerStatus(summary);
+        setRun(prev => ({ ...prev, ...mapped }));
+        if (summary.status !== 'RULES_APPROVED') {
+          setNotice(`Stage 3 requires Stage 2 approval. Current run status: ${summary.status.replaceAll('_', ' ')}.`);
+          return;
+        }
+        const rulesHash = summary.stage_2_manifest_hash;
+        if (!rulesHash) {
+          setNotice('Stage 2 rules manifest is missing. Rerun or approve Stage 2 first.');
+          return;
+        }
+        await generatorApi.startUnderstanding(run.runId, rulesHash);
+        setNotice('Section 16.3 Understanding started — streaming blueprint authoring activity.');
+        await refreshLiveRun(run.runId);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      } finally {
+        setLoadingStage(false);
+      }
       return;
     }
     if (!run.runId) {
@@ -669,7 +757,26 @@ function App() {
 
   async function rerunLiveStage(stageId: StageId) {
     if (stageId === 'evaluation') {
-      setNotice('Stage 3 (Independent Evaluation & Validation) is currently left as a placeholder.');
+      if (!run.runId) {
+        setNotice('No active run to rerun. Create or reopen a run first.');
+        return;
+      }
+      setLoadingStage(true);
+      try {
+        const summary = await api.getRun(run.runId);
+        const rulesHash = summary.stage_2_manifest_hash;
+        if (!rulesHash) {
+          setNotice('Stage 2 rules manifest is missing. Rerun or approve Stage 2 first.');
+          return;
+        }
+        await generatorApi.startUnderstanding(run.runId, rulesHash);
+        setNotice('Section 16.3 Understanding re-running.');
+        await refreshLiveRun(run.runId);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      } finally {
+        setLoadingStage(false);
+      }
       return;
     }
     if (!run.runId) {
@@ -707,10 +814,6 @@ function App() {
   }
 
   function rerunStage(stageId: StageId) {
-    if (stageId === 'evaluation') {
-      setNotice('Stage 3 (Independent Evaluation & Validation) is currently left as a placeholder.');
-      return;
-    }
     if (apiMode) {
       void rerunLiveStage(stageId);
       return;
@@ -737,12 +840,8 @@ function App() {
   }
 
   function beginStage(stageId: StageId) {
-    if (stageId === 'evaluation') {
-      setNotice('Stage 3 (Independent Evaluation & Validation) is currently left as a placeholder.');
-      return;
-    }
     const stage = run.stages.find(s => s.id === stageId);
-    if (!stage || stage.status === 'locked' || stage.status === 'running' || stage.status === 'placeholder') return;
+    if (!stage || stage.status === 'locked' || stage.status === 'running') return;
     if (stageId === 'rules' && run.stages[0].status !== 'approved') return;
     if (apiMode) {
       void beginLiveStage(stageId);
@@ -834,7 +933,26 @@ function App() {
 
   async function approveStage(stageId: StageId) {
     if (stageId === 'evaluation') {
-      setShowReview(false);
+      if (!run.runId) {
+        setShowReview(false);
+        return;
+      }
+      try {
+        const expectedManifest = await getCurrentStageManifest(stageId);
+        if (!expectedManifest) {
+          setNotice('No completed stage 3 blueprint manifest is recorded. Rerun understanding first.');
+          return;
+        }
+        await generatorApi.reviewUnderstanding(run.runId, 'approve', expectedManifest, reviewNote || undefined);
+        const summary = await api.getRun(run.runId);
+        setRun(prev => ({ ...prev, ...mapServerStatus(summary) }));
+        setShowReview(false);
+        setReviewNote('');
+        setNotice('Section 16.3 Reproduction Blueprint approved. Section Generator unlocked.');
+        void generatorApi.listBlueprints().then(items => setApprovedBlueprintAvailable(items.length > 0));
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      }
       return;
     }
     if (apiMode) {
@@ -871,10 +989,10 @@ function App() {
     });
     setRun(prev => ({
       ...prev,
-      status: nextStage === 'evaluation' ? 'Rules Approved · Stage 3 is Placeholder' : `${stageLabel[nextStage]} · Ready`,
-      activeStage: nextStage === 'evaluation' ? 'rules' : nextStage,
+      status: nextStage === 'evaluation' ? 'Rules Approved · Stage 3 Ready' : `${stageLabel[nextStage]} · Ready`,
+      activeStage: nextStage === 'evaluation' ? 'evaluation' : nextStage,
       stages: prev.stages.map(s =>
-        s.id === nextStage && nextStage !== 'evaluation' ? { ...s, status: 'ready' } : s,
+        s.id === nextStage ? { ...s, status: 'ready' } : s,
       ),
     }));
     setShowReview(false);
@@ -882,6 +1000,26 @@ function App() {
   }
 
   async function requestChanges(stageId: StageId) {
+    if (stageId === 'evaluation' && apiMode) {
+      if (!run.runId) {
+        setNotice('No run is selected; review changes were not sent.');
+        return;
+      }
+      try {
+        const expectedManifest = await getCurrentStageManifest(stageId);
+        if (!expectedManifest) {
+          setNotice('No completed stage 3 blueprint manifest is recorded.');
+          return;
+        }
+        await generatorApi.reviewUnderstanding(run.runId, 'request_changes', expectedManifest, reviewNote || undefined);
+        const summary = await api.getRun(run.runId);
+        setRun(prev => ({ ...prev, ...mapServerStatus(summary), reviewNote }));
+        setShowReview(false);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     if (apiMode) {
       if (!run.runId) {
         setNotice('No run is selected; review changes were not sent.');
@@ -1158,7 +1296,16 @@ function App() {
         <Avatar initials="AR" tone="dark" size="md" />
       </header>
 
-      <div className="app-body">
+      <WorkspaceModeTabs
+        mode={workspaceMode}
+        onChange={setWorkspaceMode}
+        generatorEnabled={approvedBlueprintAvailable}
+      />
+
+      {workspaceMode === 'generator' ? (
+        <SectionGeneratorWorkspace />
+      ) : (
+        <div className="app-body">
         <aside className={cx('left-rail', leftCollapsed && 'collapsed')}>
           <div className="rail-topline">
             <span>RUN WORKSPACE</span>
@@ -1444,7 +1591,7 @@ function App() {
                     <span className="panel-icon muted"><Workflow size={16} /></span>
                     <div>
                       <h2>Stage control</h2>
-                      <p>Stage 1 Harness + Strands · Stage 2 Harness Rules · Stage 3 Placeholder</p>
+                      <p>Stage 1 Exploration · Stage 2 Rules Engineering · Stage 3 Section 16.3 Understanding</p>
                     </div>
                   </div>
                   <span className="control-plane-label"><Lock size={11} />CONTROL PLANE</span>
@@ -1511,12 +1658,50 @@ function App() {
                   <StageControl
                     stage={run.stages[2]}
                     icon={<ShieldCheck size={16} />}
-                    actionLabel="Placeholder"
-                    actionType="start"
-                    onAction={() => setNotice('Stage 3 is currently left as a placeholder.')}
-                    disabled={true}
+                    actionLabel={
+                      run.stages[2].status === 'locked'
+                        ? 'Await Stage 2'
+                        : run.stages[2].status === 'ready'
+                          ? 'Start Stage 3'
+                          : run.stages[2].status === 'review'
+                            ? 'Review & approve'
+                            : run.stages[2].status === 'error'
+                              ? 'Rerun Stage 3'
+                              : run.stages[2].status === 'paused'
+                                ? 'Resume Stage 3'
+                                : run.stages[2].status === 'approved'
+                                  ? 'Approved'
+                                  : statusLabel(run.stages[2].status)
+                    }
+                    actionType={run.stages[2].status === 'review' ? 'review' : 'start'}
+                    onAction={() =>
+                      run.stages[2].status === 'review'
+                        ? setShowReview(true)
+                        : run.stages[2].status === 'error' || run.stages[2].status === 'paused'
+                          ? rerunStage('evaluation')
+                          : beginStage('evaluation')
+                    }
+                    onRerun={() => rerunStage('evaluation')}
+                    onPause={() => void pauseStage('evaluation')}
+                    disabled={['locked', 'running', 'approved'].includes(run.stages[2].status)}
                   />
                 </div>
+                {Boolean(run.runId) &&
+                  (run.stages[1].status === 'approved' ||
+                    ['ready', 'running', 'review', 'approved', 'error'].includes(run.stages[2].status)) && (
+                  <div className="stage-blueprint-container" style={{ marginTop: '16px' }}>
+                    <Stage3BlueprintPanel
+                      runId={run.runId}
+                      stage2ManifestHash={run.stageManifestHashes?.rules}
+                      stageStatus={mapLegacyEvaluationStatusToUnderstanding(run.status, run.activeStage)}
+                      stage3ManifestHash={run.stageManifestHashes?.evaluation}
+                      onUpdated={() => {
+                        if (run.runId) void refreshLiveRun(run.runId);
+                        void generatorApi.listBlueprints().then(items => setApprovedBlueprintAvailable(items.length > 0));
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </section>
 
@@ -1617,6 +1802,7 @@ function App() {
           </footer>
         </main>
       </div>
+      )}
 
       {rightCollapsed && (
         <button className="expand-right" onClick={() => setRightCollapsed(false)}>
