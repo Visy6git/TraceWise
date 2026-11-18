@@ -1,93 +1,70 @@
-# TraceWise architecture and ownership contract
+# Architecture and workflow
 
-## Core topology
+## System boundary
 
-```mermaid
-flowchart TB
-  UI[TraceWise UI] --> API[FastAPI API]
-  API --> CP[Run Control Plane\nstate · approvals · ACL · versions]
-  CP --> S1[Stage 1 Claims Orchestrator\nStrands · fresh context]
-  CP --> S2[Stage 2 Rules Orchestrator\nStrands · coding workspace]
-  CP --> S3[Stage 3 Evaluator\nStrands · fresh read-only context]
-  S1 --> A1[(Frozen Stage 1 artifacts)]
-  A1 --> CP
-  CP --> S2
-  S2 --> A2[(Frozen Stage 2 artifacts)]
-  A2 --> CP
-  CP --> S3
-  S3 --> A3[(Evaluation report)]
-  DB[(PostgreSQL)] --- CP
-  S3B[(Private versioned S3)] --- A1
-  S3B --- A2
-  S3B --- A3
-  SRC[(Immutable input snapshot)] --> S1
-  SRC --> S2
-  SRC --> S3
-```
-
-## Invariants
-
-- Exactly three autonomous orchestrator identities: Claims, Rules and Evaluator.
-- The Run Control Plane is deterministic application logic, not a fourth agent.
-- No stage starts automatically after the preceding stage finishes. A human reviewer approves the exact current artifact manifest hash/version; the user separately starts the next stage.
-- Claims and Rules cannot call each other or inspect each other's session, memory or workspace. Cross-stage handoff uses immutable artifact references and control-plane-routed typed messages.
-- Evaluator starts in a fresh context and receives only read-only source/artifact access.
-- Original inputs are immutable. A changed source set starts a new source-set/run version.
-- Database state is the system of record for claims, run state, approvals, audit events and task status. Strands session memory is not authoritative.
-- One Claim record gets one concise Stage 1 Evidence Hint. One Stage 2 EvidenceBundle may contain many sources, tables, rows, joins and lineage coordinates.
-- Arithmetic-derived values are not duplicated as independent claims when entity, unit, period, population, denominator and criteria are demonstrably scope-equivalent.
-- The reported target number is a reconciliation reference, never an optimization target.
-- Generated Python is untrusted. No host process fallback is permitted when an isolated executor is unavailable.
-
-## Stage state graph
+PeriodicX is a local FastAPI application with a static HTML/CSS/JavaScript client. SQLite stores tenants, template metadata, runs, status and event history. Each run receives a separate workspace:
 
 ```text
-READY_FOR_STAGE_1 -> CLAIMS_RUNNING -> CLAIMS_AWAITING_REVIEW
-                                      | approve -> CLAIMS_APPROVED
-                                      | changes -> CHANGES_REQUESTED
-CLAIMS_APPROVED -> RULES_RUNNING -> RULES_AWAITING_REVIEW
-                                  | approve -> RULES_APPROVED
-                                  | changes -> CHANGES_REQUESTED
-RULES_APPROVED -> EVALUATION_RUNNING -> EVALUATION_AWAITING_REVIEW
-                                       | final approve -> COMPLETE
-                                       | changes -> CHANGES_REQUESTED
+workspace/<tenant>/template_runs/<run-id>/
+  input/   # uploaded reference DOCX; read-only by application convention
+  work/    # template.schema.json, master.md
+
+workspace/<tenant>/generator_runs/<run-id>/
+  input/   # uploaded Excel workbooks; read-only by application convention
+  work/    # per-source .md files, master_summary.md, source_profiles.json,
+           # mapping_proposals.json, generated DOCX
 ```
 
-The current `run_state.py` implements a deterministic transition validator, not durable orchestration. The next pass must persist state transitions transactionally with compare-and-swap versioning.
+The POC never intentionally writes to an uploaded input file. Generated artifacts are kept in the corresponding `work/` directory.
 
-## Main artifact tree (outside Git)
+## Template schema contract
 
-```text
-runs/<tenant_id>/<run_id>/
-  input/target/<immutable-original>
-  input/sources/<immutable-originals>
-  extracted/target_document_blocks.json
-  extracted/source_extraction_manifest.json
-  stage_1_claims/source_knowledge.md
-  stage_1_claims/source_knowledge.json
-  stage_1_claims/knowledge_graph.json
-  stage_1_claims/schema_profiles.json
-  stage_1_claims/relationships.json
-  stage_1_claims/claims_register.vNNN.json
-  stage_1_claims/claim_history/
-  stage_2_rules/claims/<claim_id>/{plan.md,evidence_bundle.json,rule_spec.json,analysis.py,tests/,requirements.lock,execution.json,result.json,provenance.json,tool_history.jsonl,stdout.log,stderr.log,artifact_manifest.json}
-  stage_3_evaluation/evaluation_report.json
-  stage_3_evaluation/claims/<claim_id>/evaluation.json
-  events/
-  audit/
-```
+A template contains:
 
-Each published artifact has a stable logical path, immutable version, SHA-256, media type, size, creation time, producer, stage/claim reference, and dependency edges.
+- tenant, template ID/name, status/version timestamps;
+- base DOCX relative path and uploaded reference filenames;
+- Section 16.3 table metadata: DOCX table index, topic heading, style, dimensions, row/cell layout, merged-cell notes;
+- normalized field entries with stable keys, labels, types, required flags, source intent and Word table cell/paragraph locators;
+- search-criteria type and terms (PT/HLT/SMQ/manual);
+- whether the table declares initial-case and reporting-interval requirements;
+- continuation-table relationships to parent topic tables;
+- generic preview tokens, not carry-forward numbers.
 
-## Service boundaries
+The first DOCX upload is the base/style document. Additional DOCX uploads are used as reference examples. Approving a template locks that version. An edit to an approved template is made by forking a draft.
 
-| Boundary | Responsibility | Must not do |
-|---|---|---|
-| FastAPI | Authentication, request validation, authorization, API projection | Run arbitrary model-generated code or own ephemeral state only |
-| Run Control Plane | Transitions, approvals, queues, artifact freeze, invalidation, ACL | Interpret pharmacovigilance evidence |
-| Strands orchestrators | Autonomous stage decisions and scoped tool use | Bypass stage ACLs or human gates |
-| Tool broker | Typed, audited and authorized capabilities | Expose raw SQL, arbitrary absolute paths, shell or credentials |
-| Storage | Immutable S3 inputs and artifact versions | Public objects or mutable “latest” source aliases |
-| Analytics | Deterministic read-only queries and row lineage | Accept unbounded model SQL or mutate originals |
-| Sandbox | Isolated code/test execution | Run generated code in API/worker host process |
-| AG-UI event adapter | Translate operational agent/tool/state events into protocol | Stream private chain-of-thought or PHI-rich row dumps |
+## Generator pipeline
+
+### Stage 1 — exploration
+
+Each workbook is profiled in a worker pool. A profile includes workbook type, sheet name, detected header row, row count, column letters, column names, inferred types, non-empty counts, approximate unique counts, semantic-role hints and local sample values. One Markdown dictionary is generated per workbook. `master_summary.md` consolidates column metadata across the uploaded source set.
+
+### Stage 2 — mapping
+
+The deterministic mapper first proposes a match for roles such as case identifier, event term, source category, initial/follow-up flag and initial approval date. Optional Bedrock refinement receives the template structure and column metadata, not case-level sample rows. Any LLM proposal is validated against actual uploaded column references before it can be shown.
+
+The reviewer may change the source file/sheet/column for each role. The calculation layer rejects mappings that cross unsupported workbook/sheet boundaries for related role groups. When the template requires interval or initial-case filtering, the corresponding columns and values must be mapped explicitly.
+
+### Calculation model
+
+Supported count modes:
+
+- `distinct_case`: count distinct, non-empty values in the mapped case identifier column;
+- `event_rows`: count matching event rows.
+
+PT criteria are exact, case-insensitive matches. HLT, SMQ and manual criteria are not expanded into PTs. A separate denominator source can be mapped for distinct-case calculations. Source category splits are emitted only if each category can be classified and the split reconciles to the numerator.
+
+Every candidate retains the selected rule, source references, count unit, reporting interval, initial/follow-up filter and example source row/cell evidence. Ambiguous or incomplete mappings are not converted into numeric outputs.
+
+### Rendering
+
+The renderer opens the approved template's base DOCX and uses the original `docx_table_index` and cell/paragraph locators. It changes text in existing paragraphs rather than rebuilding the document, retaining the table layout and paragraph formatting as far as the underlying Word structure permits. It does not rewrite other sections.
+
+Any uncomputed prior-period count is replaced with a review placeholder. Blank Evaluation/Conclusion fields are also placeholders. The output is a new DOCX file under the Generator run's `work/` directory.
+
+## Live activity protocol
+
+The UI subscribes to Server-Sent Events. The backend emits AG-UI-style lifecycle events (`RUN_STARTED`, `STEP_STARTED`, `STEP_FINISHED`, `RUN_FINISHED`, `RUN_ERROR`) and named `CUSTOM` activity payloads that describe agent, message, file, sheet, number of columns or topic status. The event history is persisted in SQLite for refresh/replay.
+
+## Optional Bedrock
+
+`app/services/bedrock.py` uses `bedrock-runtime.converse()` through boto3. Region and model/inference-profile identifier come from settings. Standard AWS credentials are resolved by boto3. The Mapper can operate without Bedrock.

@@ -1,65 +1,38 @@
-"""Runtime configuration shared by the API, Strands stages, and coding harness."""
-from __future__ import annotations
-
-import os
 from pathlib import Path
-
-from dotenv import load_dotenv
-
-load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _read_bool(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized not in {"true", "false"}:
-        raise ValueError(f"{name} must be 'true' or 'false'")
-    return normalized == "true"
+class Settings(BaseSettings):
+    app_env: str = "local"
+
+    # Active LLM provider: 'lmstudio' or 'bedrock'
+    llm_provider: str = "lmstudio"
+    llm_temperature: float = 0.1
+    llm_max_tokens: int = 8192
+
+    # Local LM Studio OpenAI-compatible server
+    lmstudio_enabled: bool = False
+    lmstudio_base_url: str = "http://127.0.0.1:1234/v1"
+    lmstudio_model_id: str = "prism-ml/bonsai-27b"
+    lmstudio_timeout: float = 300.0
+    lmstudio_max_concurrency: int = 1
+
+    # AWS Bedrock settings
+    aws_region: str = "us-east-1"
+    bedrock_model_id: str = ""
+    bedrock_max_tokens: int = 6000
+    bedrock_temperature: float = 0.1
+    bedrock_enabled: bool = False
+
+    workspace_root: Path = Path("./workspace")
+    database_path: Path = Path("./workspace/workbench.sqlite3")
+    max_upload_mb: int = 150
+    max_docx_files: int = 12
+    max_excel_files: int = 30
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
-MOCK_RUNS_ENABLED = _read_bool("MOCK_RUNS_ENABLED", True)
-BEDROCK_ENABLED = _read_bool("BEDROCK_ENABLED", False)
-BEDROCK_MODEL_ID = os.environ.get(
-    "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-5-5"
-)
-AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
-# Newer Bedrock models (e.g. Claude Sonnet 5.5) reject `temperature` in the
-# Converse inferenceConfig ("`temperature` is deprecated for this model").
-# Keep it off by default; opt in only for older models that still accept it.
-BEDROCK_SEND_TEMPERATURE = _read_bool("BEDROCK_SEND_TEMPERATURE", False)
-
-LMSTUDIO_ENABLED = _read_bool("LMSTUDIO_ENABLED", False)
-LMSTUDIO_BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
-LMSTUDIO_MODEL_ID = os.environ.get("LMSTUDIO_MODEL_ID", "google/gemma-4-e4b")
-LMSTUDIO_TIMEOUT = float(os.environ.get("LMSTUDIO_TIMEOUT", "120.0"))
-LMSTUDIO_MAX_TOKENS = int(os.environ.get("LMSTUDIO_MAX_TOKENS", "8192"))
-
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "").strip().lower()
-
-MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "100"))
-if MAX_UPLOAD_MB < 1:
-    raise ValueError("MAX_UPLOAD_MB must be a positive integer")
-
-
-def get_active_llm_provider() -> str:
-    """Resolve the active LLM provider based on config flags."""
-    if LLM_PROVIDER in {"lmstudio", "bedrock", "openai"}:
-        return LLM_PROVIDER
-    if LMSTUDIO_ENABLED:
-        return "lmstudio"
-    if BEDROCK_ENABLED:
-        return "bedrock"
-    if MOCK_RUNS_ENABLED:
-        return "mock"
-    return "lmstudio"
-
-
-def is_live_llm_enabled() -> bool:
-    """Return True when a live LLM backend (LM Studio, OpenAI, or Bedrock) is configured."""
-    return (
-        BEDROCK_ENABLED
-        or LMSTUDIO_ENABLED
-        or LLM_PROVIDER in {"lmstudio", "bedrock", "openai"}
-    )
+settings = Settings()
+settings.workspace_root.mkdir(parents=True, exist_ok=True)
+settings.database_path.parent.mkdir(parents=True, exist_ok=True)

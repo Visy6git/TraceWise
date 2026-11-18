@@ -1,45 +1,15 @@
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
 .venv/
-venv/
-
-# Frontend
-node_modules/
-dist/
-.vite/
-*.tsbuildinfo
-
-# Secrets and local state
+__pycache__/
+.pytest_cache/
 .env
-.env.*.local
-*.pem
-*.key
-*.sqlite
+*.py[cod]
+workspace/*
+!workspace/.gitkeep
+qa_workspace*/
+qa_render/
+*.sqlite3
 *.db
-aws_creds.py
-*_creds.py
-credentials*.json
+/workspace
+dataset/
 
-# PHI, source uploads, runtime workspaces and artifacts must never enter Git
-.tracewise-runtime/
-/runtime/
-runs/
-uploads/
-artifacts/
-source-data/
-*.xlsx
-*.xls
-*.csv
-*.pdf
-*.docx
-*.parquet
-*.duckdb
-
-# OS / editor
-.DS_Store
-.idea/
-.vscode/
 /dataset

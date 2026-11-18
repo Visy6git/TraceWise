@@ -1,0 +1,950 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PeriodicX — PBRER Section 16.3 Table Workbench</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="4"/>
+          <path d="M3 9h18M9 21V9"/>
+          <circle cx="15.5" cy="15" r="2.2"/>
+        </svg>
+      </div>
+      <div>
+        <b>PeriodicX</b>
+        <small>TABLE INTELLIGENCE</small>
+      </div>
+    </div>
+
+    <div class="tenant-box">
+      <label for="tenantSelect">TENANT WORKSPACE</label>
+      <div class="tenant-row">
+        <select id="tenantSelect" aria-label="Select tenant workspace"></select>
+        <button id="addTenantBtn" class="icon-btn-dark" title="Create new tenant workspace" aria-label="Add tenant">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <nav class="main-nav" aria-label="Primary">
+      <button class="nav-item active" data-tab="templates">
+        <span class="nav-icon" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2.5"/>
+            <path d="M3 9h18M3 15h18M9 9v12"/>
+          </svg>
+        </span>
+        <span>
+          <b>Template Generator</b>
+          <small>Blueprints &amp; client schemas</small>
+        </span>
+      </button>
+      <button class="nav-item" data-tab="generator">
+        <span class="nav-icon" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <path d="M8 13h8M8 17h5"/>
+          </svg>
+        </span>
+        <span>
+          <b>Generator</b>
+          <small>Map Excel data to DOCX</small>
+        </span>
+      </button>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <button class="engine-card" id="sidebarEngineBtn" title="View LLM &amp; runtime configuration">
+        <div class="local-state"><i id="llmDot"></i><span id="sidebarLlmStatus">CHECKING ENGINE…</span></div>
+        <small id="sidebarLlmDetail">Local workspace · Section 16.3</small>
+      </button>
+      <p>Section 16.3 table-centric PBRER workflows with human-in-the-loop approval.</p>
+      <div class="sidebar-version">POC · v1.1</div>
+    </div>
+  </aside>
+
+  <!-- Main Workspace -->
+  <main class="main">
+    <header class="topbar">
+      <div class="breadcrumb">
+        <span>WORKSPACE</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        <span id="topbarTenantName" class="breadcrumb-tenant">Demo tenant</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        <strong id="breadcrumbCurrent">Template Generator</strong>
+      </div>
+      <div class="topbar-right">
+        <button class="status-chip" id="engineStatusBadge" title="Inspect engine &amp; LLM status">
+          <span class="status-chip-dot"></span>
+          <span id="engineStatusText">Local mode</span>
+        </button>
+        <span class="topbar-divider"></span>
+        <span class="security-note">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Files stay local
+        </span>
+        <button class="help-button" id="helpBtn" title="Workflow guide" aria-label="Help">?</button>
+      </div>
+    </header>
+
+    <!-- ==================== TEMPLATE GENERATOR PAGE ==================== -->
+    <section class="page active" id="templatesPage">
+      <!-- Visual Hero with Compact Top-Right Upload Button -->
+      <div class="hero-banner template-hero">
+        <div class="hero-art" aria-hidden="true">
+          <svg viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="heroGrad1" x1="0" y1="0" x2="360" y2="150" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#176c4b" stop-opacity="0.16"/>
+                <stop offset="100%" stop-color="#45ad70" stop-opacity="0.03"/>
+              </linearGradient>
+              <linearGradient id="heroCardGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+                <stop offset="100%" stop-color="#edf7f0" stop-opacity="0.85"/>
+              </linearGradient>
+            </defs>
+            <circle cx="290" cy="40" r="85" fill="url(#heroGrad1)"/>
+            <g class="float-slow">
+              <rect x="30" y="24" width="112" height="96" rx="10" fill="url(#heroCardGrad)" stroke="#cce2d2" stroke-width="1.2"/>
+              <rect x="44" y="38" width="54" height="7" rx="3.5" fill="#176c4b" fill-opacity="0.25"/>
+              <rect x="44" y="53" width="84" height="5" rx="2.5" fill="#92b39f" fill-opacity="0.35"/>
+              <rect x="44" y="64" width="68" height="5" rx="2.5" fill="#92b39f" fill-opacity="0.28"/>
+              <rect x="44" y="79" width="84" height="26" rx="5" fill="#e6f4ea" stroke="#b9dbc4" stroke-width="1"/>
+              <path d="M44 92h84M80 79v26" stroke="#b9dbc4" stroke-width="1"/>
+            </g>
+            <path class="dash-flow" d="M150 72 C175 72, 175 72, 200 72" stroke="#176c4b" stroke-width="1.6" stroke-dasharray="4 4" stroke-linecap="round"/>
+            <polygon points="200,68 208,72 200,76" fill="#176c4b"/>
+            <g class="float-delayed">
+              <rect x="216" y="18" width="132" height="108" rx="11" fill="#ffffff" stroke="#bdd9c6" stroke-width="1.3"/>
+              <rect x="228" y="30" width="108" height="16" rx="4" fill="#176c4b" fill-opacity="0.1"/>
+              <rect x="234" y="35" width="44" height="6" rx="3" fill="#176c4b" fill-opacity="0.55"/>
+              <rect x="296" y="35" width="32" height="6" rx="3" fill="#2d9260" fill-opacity="0.35"/>
+              <rect x="228" y="54" width="46" height="12" rx="3" fill="#f2f7f3"/>
+              <rect x="280" y="54" width="56" height="12" rx="3" fill="#e5f5eb"/>
+              <rect x="228" y="72" width="46" height="12" rx="3" fill="#f2f7f3"/>
+              <rect x="280" y="72" width="56" height="12" rx="3" fill="#e5f5eb"/>
+              <rect x="228" y="90" width="46" height="12" rx="3" fill="#f2f7f3"/>
+              <rect x="280" y="90" width="56" height="12" rx="3" fill="#e5f5eb"/>
+              <rect x="228" y="108" width="108" height="8" rx="3" fill="#eef6f0"/>
+            </g>
+          </svg>
+        </div>
+
+        <div class="hero-top-row">
+          <div class="hero-copy">
+            <div class="eyebrow">01 · TEMPLATE BLUEPRINT STUDIO</div>
+            <h1>Template Generator</h1>
+            <p>Inspect tenant-specific Section 16.3 table blueprints, customize extracted fields and guidance, and approve reusable contracts for report generation.</p>
+          </div>
+          <!-- Compact Top-Right Corner Button to Open Upload & Blueprint Drawer -->
+          <div class="hero-corner-actions">
+            <button class="btn-upload-compact" id="openUploadModalBtn" title="Upload DOCX documents to learn a new template blueprint">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span>Upload DOCX</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Compact KPI Strip -->
+        <div class="kpi-strip">
+          <div class="kpi-card">
+            <span class="kpi-label">SAVED TEMPLATES</span>
+            <strong id="kpiTotalTemplates">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">APPROVED</span>
+            <strong class="kpi-accent" id="kpiApprovedTemplates">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">DRAFTS IN REVIEW</span>
+            <strong class="kpi-amber" id="kpiDraftTemplates">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">ACTIVE TABLE BLOCKS</span>
+            <strong id="kpiActiveTables">0</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subnav + Quick Blueprint Switcher -->
+      <div class="subnav-bar">
+        <div class="subnav">
+          <button class="subnav-item active" data-subtab="createTemplate">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            Blueprint Studio
+          </button>
+          <button class="subnav-item" data-subtab="templateHistory">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+            Template Library <span class="mini-count" id="templateHistoryCount">0</span>
+          </button>
+        </div>
+        <div class="quick-switcher" id="templateQuickSwitcher">
+          <label for="quickTemplateSelect">ACTIVE BLUEPRINT</label>
+          <select id="quickTemplateSelect" aria-label="Switch active template blueprint">
+            <option value="">No templates yet</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- SUBPAGE 1: BLUEPRINT STUDIO -->
+      <div class="subpage active" id="createTemplate">
+        <!-- Empty State (shown when tenant has no template loaded) -->
+        <div class="studio-empty" id="studioEmptyState">
+          <div class="studio-empty-graphic" aria-hidden="true">
+            <svg width="148" height="112" viewBox="0 0 148 112" fill="none">
+              <rect x="10" y="14" width="60" height="80" rx="10" fill="#ffffff" stroke="#cde1d3" stroke-width="1.5"/>
+              <rect x="20" y="28" width="32" height="6" rx="3" fill="#176c4b" fill-opacity="0.22"/>
+              <rect x="20" y="40" width="40" height="5" rx="2.5" fill="#9fb9a8" fill-opacity="0.35"/>
+              <rect x="20" y="51" width="40" height="28" rx="4" fill="#edf7f0" stroke="#bddac6"/>
+              <path d="M20 64h40M38 51v28" stroke="#bddac6"/>
+              <rect x="78" y="20" width="62" height="76" rx="10" fill="#f3faf5" stroke="#176c4b" stroke-opacity="0.35" stroke-width="1.5" stroke-dasharray="4 3"/>
+              <circle cx="109" cy="52" r="14" fill="#e2f3e8"/>
+              <path d="M109 46v12M103 52h12" stroke="#176c4b" stroke-width="2" stroke-linecap="round"/>
+              <rect x="91" y="74" width="36" height="6" rx="3" fill="#176c4b" fill-opacity="0.2"/>
+            </svg>
+          </div>
+          <h2>No Section 16.3 template blueprint open</h2>
+          <p>Upload one or more prior client PBRER DOCX reports using the <b>Upload DOCX</b> button in the top-right corner, or select an existing blueprint from the library.</p>
+          <div class="studio-empty-actions">
+            <button class="btn-primary" id="emptyUploadBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              Upload reference reports
+            </button>
+            <button class="btn-secondary hidden" id="emptyBrowseHistoryBtn">Browse saved templates</button>
+          </div>
+        </div>
+
+        <!-- Active Blueprint Showcase & Review Workspace (NO Agent Activity column!) -->
+        <div class="analysis-workspace hidden" id="templateWorkspace">
+          <div class="workspace-head card-banner" id="templateWorkspaceHead">
+            <div class="workspace-head-info">
+              <div class="workspace-badges">
+                <span class="eyebrow">SECTION 16.3 · TEMPLATE BLUEPRINT</span>
+                <span class="badge-type generic hidden" id="templateTypeBadge">GENERIC</span>
+                <span class="status-pill running" id="templateStatus"><i></i> Agents working</span>
+                <span class="unsaved-pill hidden" id="unsavedBadge">● Unsaved edits</span>
+              </div>
+              <h2 id="templateWorkspaceTitle">Learning Section 16.3 structure</h2>
+              <p id="templateWorkspaceSub">Discovering table blocks and tenant-specific field definitions.</p>
+            </div>
+            <div class="workspace-head-actions">
+              <button class="btn-pause-run hidden" id="templatePauseBtn" title="Pause or resume learning Section 16.3 template">
+                <span class="pause-icon" aria-hidden="true">⏸</span>
+                <span class="pause-label">Pause</span>
+              </button>
+              <button class="btn-ghost btn-sm hidden" id="exportSchemaBtn" title="Download template.schema.json">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Schema JSON
+              </button>
+              <button class="btn-secondary btn-sm hidden" id="forkActiveTemplateBtn">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M6 9v3a6 6 0 0 0 6 6m6-9v3a6 6 0 0 1-6 6"/></svg>
+                Fork as draft
+              </button>
+              <button class="btn-primary btn-sm hidden" id="useInGeneratorBtn">
+                Use in Generator
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Compact Inline Progress Ticker (Replaces bulky Agent Activity column) -->
+          <div class="live-progress-strip hidden" id="templateProgressStrip">
+            <div class="progress-track"><div class="progress-fill" id="templateProgressFill"></div></div>
+            <div class="progress-meta">
+              <span class="live-dot"></span>
+              <strong id="templateLiveAgent">orchestrator</strong>
+              <span id="templateLiveMessage">Initializing template learning workspace…</span>
+            </div>
+          </div>
+
+          <!-- Two-Column Spacious Layout: Reference Docs Rail + Generic Table Blueprint Canvas -->
+          <div class="blueprint-studio-grid">
+            <aside class="panel outline-panel" id="refDocsPanel">
+              <div class="panel-title">
+                <span>REFERENCE DOCUMENTS</span>
+                <span class="pill-count" id="templateDocCount">0</span>
+              </div>
+              <div class="reading-banner hidden" id="refDocsHighlightPill">
+                <span class="live-dot"></span>
+                <span id="refDocsHighlightLabel">Reading documents…</span>
+              </div>
+              <div id="templateDocOutline" class="outline-content">
+                <div class="skeleton"></div>
+                <div class="skeleton short"></div>
+              </div>
+              <div class="panel-subtitle">TABLE JUMP OUTLINE</div>
+              <div id="tableOutlineNav" class="table-jump-list"></div>
+            </aside>
+
+            <section class="panel schema-panel" id="blueprintPanel">
+              <div class="panel-title blueprint-toolbar">
+                <div class="toolbar-left">
+                  <span id="blueprintPanelTitle">GENERIC TABLE BLUEPRINT</span>
+                  <span class="pill-count" id="tableBlockCount">0 TABLES</span>
+                  <span class="reading-pill hidden" id="blueprintHighlightPill"><i></i> <span id="blueprintHighlightLabel">Generating blueprint…</span></span>
+                </div>
+                <div class="toolbar-controls">
+                  <div class="search-mini">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <input id="blueprintSearch" type="search" placeholder="Filter topics or fields…" aria-label="Filter blueprint tables">
+                  </div>
+                </div>
+              </div>
+              <div id="genericTablePreview" class="blueprint-content">
+                <div class="empty-panel">
+                  <div class="empty-glyph">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+                  </div>
+                  <b>Table blueprint will appear here</b>
+                  <p>Each detected topic table becomes a reusable, tenant-specific blueprint with typed fields and generic placeholders.</p>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <!-- REVIEW BEFORE APPROVAL -->
+          <div class="template-review hidden" id="templateReview">
+            <div class="review-title">
+              <div>
+                <div class="review-eyebrow-row">
+                  <span class="eyebrow">REVIEW BEFORE APPROVAL</span>
+                  <span class="llm-schema-tag" id="schemaOriginTag" title="Tenant blueprints support dynamic fields &amp; types across different clients">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                    Dynamic Tenant Blueprint
+                  </span>
+                </div>
+                <h2>Template blueprint</h2>
+                <p>Verify detected table fields, edit labels, types, tokens or guidance, then approve to unlock this blueprint in Generator.</p>
+              </div>
+              <span class="status-pill draft" id="templateReviewStatus">DRAFT</span>
+            </div>
+
+            <div class="review-grid">
+              <!-- Left: Detected Table Fields -->
+              <div class="card editor-card">
+                <div class="card-heading">
+                  <div>
+                    <h3>Detected table fields <span class="mini-count" id="detectedFieldCount">0</span></h3>
+                    <p>Customize labels, types, placeholders, required flags and source intent for this tenant.</p>
+                  </div>
+                  <div class="editor-head-actions">
+                    <input id="fieldSearch" class="field-search-input" type="search" placeholder="Search fields…" aria-label="Filter detected fields">
+                    <button class="btn-ghost btn-xs" id="addFieldBtn" title="Add custom field to schema">
+                      + Add field
+                    </button>
+                  </div>
+                </div>
+                <datalist id="fieldTypeSuggestions">
+                  <option value="count_ratio">
+                  <option value="criteria">
+                  <option value="count">
+                  <option value="percentage">
+                  <option value="date_range">
+                  <option value="narrative">
+                  <option value="source_note">
+                  <option value="table_grid">
+                  <option value="custom">
+                </datalist>
+                <div id="fieldEditor" class="field-editor"></div>
+              </div>
+
+              <!-- Right: master.md with Edit / Preview Toggle -->
+              <div class="card master-card" id="masterCard">
+                <div class="card-heading">
+                  <div>
+                    <h3>master.md <span class="reading-pill hidden" id="masterHighlightPill"><i></i> <span id="masterHighlightLabel">Writing master.md…</span></span></h3>
+                    <p>Observed layout conventions, variations, guardrails &amp; 2 best reference table summaries.</p>
+                  </div>
+                  <div class="master-tools">
+                    <div class="segmented segmented-sm" role="tablist" aria-label="master.md view">
+                      <button class="seg-btn active" data-md-view="preview" role="tab">Preview</button>
+                      <button class="seg-btn" data-md-view="edit" role="tab">Edit</button>
+                    </div>
+                    <button class="btn-ghost btn-xs" id="copyMasterBtn" title="Copy Markdown">Copy</button>
+                    <button class="btn-ghost btn-xs" id="downloadMasterBtn" title="Download master.md">↓ .md</button>
+                  </div>
+                </div>
+                <textarea id="masterEditor" class="hidden" spellcheck="false" aria-label="master.md editor"></textarea>
+                <div id="masterPreview" class="md-preview"></div>
+                <div class="master-meta-bar">
+                  <span id="masterWordCount">0 words · 0 lines</span>
+                  <span>Tenant blueprint documentation</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="review-actions" id="templateReviewActions">
+              <div class="template-name-edit">
+                <label for="templateNameEdit">TEMPLATE NAME</label>
+                <input id="templateNameEdit" placeholder="Enter template name…">
+              </div>
+              <div class="review-buttons">
+                <button class="btn-secondary" id="saveTemplateBtn">Save changes <kbd>Ctrl+S</kbd></button>
+                <button class="btn-primary" id="approveTemplateBtn">Approve template <span>✓</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUBPAGE 2: TEMPLATE LIBRARY / HISTORY -->
+      <div class="subpage" id="templateHistory">
+        <div class="history-toolbar">
+          <div>
+            <span class="eyebrow">SAVED BLUEPRINTS</span>
+            <h2>Template library</h2>
+            <p>Browse, inspect, fork, approve or remove client Section 16.3 blueprints.</p>
+          </div>
+          <div class="history-controls">
+            <div class="search-mini">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input id="historySearch" type="search" placeholder="Search templates…" aria-label="Search templates">
+            </div>
+            <div class="segmented" role="tablist" aria-label="Filter template status">
+              <button class="seg-btn active" data-history-filter="all">All</button>
+              <button class="seg-btn" data-history-filter="approved">Approved</button>
+              <button class="seg-btn" data-history-filter="draft">Drafts</button>
+            </div>
+            <button class="btn-secondary btn-sm" id="refreshHistoryBtn">↻ Refresh</button>
+          </div>
+        </div>
+        <div class="history-list" id="templateHistoryList">
+          <div class="empty-panel">
+            <div class="empty-glyph">◷</div>
+            <b>No templates yet</b>
+            <p>Click Upload DOCX in the top-right corner to learn a Section 16.3 template.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== GENERATOR PAGE ==================== -->
+    <section class="page" id="generatorPage">
+      <!-- Visual Hero Matching Template Generator with Compact Top-Right Upload Button -->
+      <div class="hero-banner generator-hero">
+        <div class="hero-art" aria-hidden="true">
+          <svg viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="genHeroGrad" x1="0" y1="0" x2="360" y2="150" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#176c4b" stop-opacity="0.16"/>
+                <stop offset="100%" stop-color="#45ad70" stop-opacity="0.03"/>
+              </linearGradient>
+              <linearGradient id="genCardGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+                <stop offset="100%" stop-color="#edf7f0" stop-opacity="0.85"/>
+              </linearGradient>
+            </defs>
+            <circle cx="290" cy="40" r="85" fill="url(#genHeroGrad)"/>
+            <!-- Excel Source Sheet Graphic -->
+            <g class="float-slow">
+              <rect x="26" y="22" width="118" height="98" rx="10" fill="url(#genCardGrad)" stroke="#cce2d2" stroke-width="1.2"/>
+              <rect x="38" y="34" width="94" height="14" rx="4" fill="#176c4b" fill-opacity="0.14"/>
+              <rect x="44" y="38" width="24" height="5" rx="2.5" fill="#176c4b" fill-opacity="0.5"/>
+              <rect x="74" y="38" width="24" height="5" rx="2.5" fill="#176c4b" fill-opacity="0.32"/>
+              <rect x="104" y="38" width="20" height="5" rx="2.5" fill="#176c4b" fill-opacity="0.32"/>
+              <rect x="38" y="54" width="94" height="54" rx="5" fill="#ffffff" stroke="#cde2d3" stroke-width="1"/>
+              <path d="M38 68h94M38 82h94M38 96h94M70 54v54M102 54v54" stroke="#dcece1" stroke-width="1"/>
+              <rect x="43" y="59" width="20" height="4" rx="2" fill="#89b59a" fill-opacity="0.6"/>
+              <rect x="75" y="73" width="22" height="4" rx="2" fill="#2d9260" fill-opacity="0.45"/>
+              <rect x="107" y="87" width="18" height="4" rx="2" fill="#176c4b" fill-opacity="0.45"/>
+            </g>
+            <path class="dash-flow" d="M152 72 C176 72, 176 72, 200 72" stroke="#176c4b" stroke-width="1.6" stroke-dasharray="4 4" stroke-linecap="round"/>
+            <polygon points="200,68 208,72 200,76" fill="#176c4b"/>
+            <!-- Styled Output DOCX Graphic -->
+            <g class="float-delayed">
+              <rect x="216" y="18" width="128" height="108" rx="11" fill="#ffffff" stroke="#bdd9c6" stroke-width="1.3"/>
+              <rect x="230" y="32" width="64" height="8" rx="4" fill="#176c4b" fill-opacity="0.28"/>
+              <rect x="230" y="46" width="100" height="5" rx="2.5" fill="#9fb9a8" fill-opacity="0.35"/>
+              <rect x="230" y="58" width="100" height="40" rx="6" fill="#eef8f1" stroke="#b9dbc4" stroke-width="1"/>
+              <rect x="230" y="58" width="100" height="13" rx="5" fill="#176c4b" fill-opacity="0.16"/>
+              <path d="M230 84h100M272 71v27" stroke="#c7e2cf" stroke-width="1"/>
+              <circle cx="322" cy="108" r="10" fill="#176c4b"/>
+              <path d="M318 108l3 3 5-6" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </g>
+          </svg>
+        </div>
+
+        <div class="hero-top-row">
+          <div class="hero-copy">
+            <div class="eyebrow">02 · DATA MAPPING &amp; REPORT BUILD</div>
+            <h1>Generator</h1>
+            <p>Profile Excel source workbooks, map canonical columns to an approved Section 16.3 template blueprint, verify evidence and generate a styled DOCX report.</p>
+          </div>
+          <div class="hero-corner-actions">
+            <button class="btn-upload-compact" id="openGeneratorModalBtn" title="Upload Excel workbooks and start a new generation run">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span>Upload Excel</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Compact KPI Strip Matching Template Generator -->
+        <div class="kpi-strip">
+          <div class="kpi-card">
+            <span class="kpi-label">APPROVED TEMPLATES</span>
+            <strong class="kpi-accent" id="kpiGenApprovedTemplates">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">SOURCE WORKBOOKS</span>
+            <strong id="kpiGenWorkbooks">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">MAPPED ROLES</span>
+            <strong id="kpiGenMappedRoles">0 / 10</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">TOPIC CANDIDATES</span>
+            <strong class="kpi-accent" id="kpiGenCandidates">0</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Generator Ready State: Approved Templates Card Grid (shown before a run starts) -->
+      <div class="generator-ready-section" id="generatorReadySection">
+        <div class="history-toolbar">
+          <div>
+            <span class="eyebrow">READY FOR GENERATION</span>
+            <h2>Approved templates</h2>
+            <p>Pick an approved client blueprint below or click <b>Upload Excel</b> in the top-right corner to launch a new generation run.</p>
+          </div>
+          <button class="btn-secondary btn-sm" id="emptyStartGenBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Configure &amp; upload Excel
+          </button>
+        </div>
+        <div class="history-list" id="generatorApprovedList"></div>
+      </div>
+
+      <!-- Active Generator Workspace (NO Agent Activity column!) -->
+      <div class="generator-workspace hidden" id="generatorWorkspace">
+        <div class="workspace-head card-banner">
+          <div class="workspace-head-info">
+            <div class="workspace-badges">
+              <span class="eyebrow">GENERATION RUN</span>
+              <span class="status-pill running" id="generatorStatus"><i></i> Agents working</span>
+              <span class="mapper-engine-pill hidden" id="mapperEnginePill"></span>
+            </div>
+            <h2 id="generatorWorkspaceTitle">Exploring source workbooks</h2>
+            <p id="generatorWorkspaceSub">Stage 1 · profiling uploaded Excel workbooks.</p>
+          </div>
+          <!-- Compact 4-stage inline stepper -->
+          <div class="stage-stepper" id="generatorStepper">
+            <div class="step-pill active" data-step="1"><span>1</span>Explore</div>
+            <div class="step-pill" data-step="2"><span>2</span>Map</div>
+            <div class="step-pill" data-step="3"><span>3</span>Review</div>
+            <div class="step-pill" data-step="4"><span>4</span>DOCX</div>
+          </div>
+          <div class="workspace-head-actions">
+            <button class="btn-pause-run hidden" id="generatorPauseBtn" title="Pause or resume this generation run">
+              <span class="pause-icon" aria-hidden="true">⏸</span>
+              <span class="pause-label">Pause</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Inline Live Progress Ticker (Replaces Agent Activity column) -->
+        <div class="live-progress-strip hidden" id="generatorProgressStrip">
+          <div class="progress-track"><div class="progress-fill" id="generatorProgressFill"></div></div>
+          <div class="progress-meta">
+            <span class="live-dot"></span>
+            <strong id="generatorLiveAgent">orchestrator</strong>
+            <span id="generatorLiveMessage">Preparing isolated source workspace…</span>
+          </div>
+        </div>
+
+        <!-- Spacious Two-Column Panel: Data Sources + Table Mapping -->
+        <div class="generator-two-panel">
+          <section class="panel sources-panel">
+            <div class="panel-title">
+              <span>DATA SOURCES</span>
+              <div class="sources-panel-right">
+                <button type="button" class="source-summary-btn hidden" id="openMasterSummaryBtn" title="Preview master_summary.md">Summary .md</button>
+                <span class="pill-count" id="sourceFileCount">0</span>
+              </div>
+            </div>
+            <div class="source-explorer" id="sourceExplorer">
+              <div class="skeleton"></div>
+              <div class="skeleton"></div>
+            </div>
+          </section>
+
+          <section class="panel mapper-panel">
+            <div class="panel-title">
+              <span>TABLE MAPPING OVERVIEW</span>
+              <span class="pill-count" id="mappedTopicCount">0 TOPICS</span>
+            </div>
+            <div class="mapping-content" id="mappingContent">
+              <div class="empty-panel">
+                <div class="empty-glyph">⌁</div>
+                <b>Mapping proposals will appear here</b>
+                <p>The mapper waits until Stage 1 finishes profiling every workbook and its columns.</p>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Mapping Review & Output -->
+        <div class="generator-review hidden" id="generatorReview">
+          <div class="review-title">
+            <div>
+              <span class="eyebrow">MAPPING REVIEW &amp; REPORT OUTPUT</span>
+              <h2>Review table evidence</h2>
+              <p>Verify canonical column mappings, choose the explicit counting unit, and enter updated narratives for the reporting interval.</p>
+            </div>
+            <span class="status-pill draft">APPROVAL REQUIRED</span>
+          </div>
+
+          <div class="mapping-approval-grid">
+            <div class="card role-map-card">
+              <div class="card-heading">
+                <div>
+                  <h3>Canonical column mapping</h3>
+                  <p>Map each pharmacovigilance data role to the detected workbook column.</p>
+                </div>
+                <span class="coverage-pill" id="roleCoveragePill">0 / 10 mapped</span>
+              </div>
+              <div id="roleMappingEditor"></div>
+            </div>
+
+            <div class="card count-card">
+              <h3>Calculation unit</h3>
+              <p>Choose the counting unit intended by the client's template and reporting rules.</p>
+              <div class="count-mode-cards" id="countModeCards">
+                <button type="button" class="mode-option" data-mode="distinct_case">
+                  <b>Distinct case identifiers</b>
+                  <small>Deduplicated by unique Case / ICSR ID</small>
+                </button>
+                <button type="button" class="mode-option" data-mode="event_rows">
+                  <b>Matching event rows</b>
+                  <small>Event-level row count (multiple records per ICSR)</small>
+                </button>
+              </div>
+              <select id="countMode" class="sr-select" aria-label="Calculation unit">
+                <option value="" selected disabled>Select the counting unit…</option>
+                <option value="distinct_case">Distinct case identifiers</option>
+                <option value="event_rows">Matching event rows</option>
+              </select>
+              <div class="warning-box">
+                <b>Do not assume patients = cases = events.</b>
+                <span>Confirm that the template notes and mapped columns support the selected counting unit.</span>
+              </div>
+              <div class="field">
+                <label for="mappingReviewerNote">REVIEWER NOTE</label>
+                <textarea id="mappingReviewerNote" placeholder="Add a rule clarification or source inclusion/exclusion note…"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- Topic Review Filter Bar -->
+          <div class="topic-review-toolbar">
+            <div class="topic-review-stats">
+              <h3>Topic evidence &amp; narratives</h3>
+              <span class="mini-count" id="narrativeProgressPill">0 / 0 narratives entered</span>
+            </div>
+            <div class="toolbar-controls">
+              <div class="search-mini">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input id="topicReviewSearch" type="search" placeholder="Filter topics…" aria-label="Filter topic cards">
+              </div>
+              <div class="segmented" role="tablist">
+                <button class="seg-btn active" data-topic-filter="all">All</button>
+                <button class="seg-btn" data-topic-filter="ready">Candidates</button>
+                <button class="seg-btn" data-topic-filter="review">Needs Review</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="topic-review-list" id="topicReviewList"></div>
+
+          <div class="generate-footer">
+            <div>
+              <b id="generationReadiness">Mapping proposals ready for review</b>
+              <span>Report generation writes a new DOCX copy retaining original client styling. Uploaded files are never modified.</span>
+            </div>
+            <button class="btn-primary" id="generateDocxBtn">Approve mappings &amp; build DOCX <span>→</span></button>
+          </div>
+        </div>
+
+        <div class="generated-result hidden" id="generatedResult">
+          <div class="success-head">
+            <span class="success-icon">✓</span>
+            <div>
+              <b>DOCX report generated successfully</b>
+              <span id="generatedFilename"></span>
+            </div>
+            <a class="btn-primary download-btn" id="downloadGenerated" href="#">Download report <span>↓</span></a>
+          </div>
+          <div id="generatedWarnings" class="generated-warnings"></div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="app-footer">
+      <span>PERIODICX · SECTION 16.3 TABLE INTELLIGENCE</span>
+      <span>LOCAL POC · HUMAN APPROVAL BEFORE GENERATION</span>
+    </footer>
+  </main>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- ==================== UPLOAD DOCUMENTS & NEW TEMPLATE MODAL ==================== -->
+<div class="modal hidden" id="uploadTemplateModal" aria-modal="true" role="dialog" aria-labelledby="uploadModalTitle">
+  <div class="modal-card modal-wide">
+    <button class="modal-close" id="closeUploadModal" aria-label="Close upload dialog">×</button>
+    <div class="modal-header-row">
+      <div>
+        <span class="eyebrow">LEARNING INPUT · NEW TEMPLATE BLUEPRINT</span>
+        <h2 id="uploadModalTitle">Upload reference reports</h2>
+        <p>Upload one or more completed client PBRER DOCX reports. The <b>first document</b> is preserved as the base styling template; all documents inform the extracted blueprint.</p>
+      </div>
+      <span class="required-tag">DOCX ONLY</span>
+    </div>
+
+    <div class="run-fields">
+      <div class="field">
+        <label for="templateRunName">TEMPLATE / RUN NAME</label>
+        <input id="templateRunName" value="Section 16.3 — client template" placeholder="e.g. Acme PBRER 2025 template">
+      </div>
+      <div class="field">
+        <label>CLIENT / TENANT</label>
+        <div class="readonly-field" id="templateTenantLabel">Demo tenant</div>
+      </div>
+    </div>
+
+    <div class="field template-type-section">
+      <label>TEMPLATE SCENARIO</label>
+      <div class="template-type-grid" id="templateTypeGrid" role="radiogroup" aria-label="Template scenario">
+        <button type="button" class="type-option active" data-template-type="generic" role="radio" aria-checked="true">
+          <div class="type-option-top">
+            <b>Generic Template</b>
+            <span class="type-pill-tag generic">REUSABLE · GREEN</span>
+          </div>
+          <small>Replaces all table values — including Search Criteria — with generic <code>{{placeholders}}</code> for cross-product reuse.</small>
+        </button>
+        <button type="button" class="type-option" data-template-type="product" role="radio" aria-checked="false">
+          <div class="type-option-top">
+            <b>Product Template</b>
+            <span class="type-pill-tag product">FIXED MEDDRA · BLUE</span>
+          </div>
+          <small>Carries forward exact safety topic titles &amp; MedDRA Search Criteria (PTs/HLTs/SMQs) verbatim. Counts &amp; narratives stay generic.</small>
+        </button>
+      </div>
+    </div>
+
+    <label class="dropzone" id="docxDrop">
+      <input type="file" id="docxInput" accept=".docx" multiple>
+      <span class="drop-icon" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </span>
+      <b>Drop prior PBRER DOCX documents here</b>
+      <span>or <u>browse local files</u></span>
+      <small>Multiple reference documents supported · maximum 12 files · reorder below to choose Base Style DOCX</small>
+    </label>
+
+    <div class="selected-files" id="docxFiles">
+      <div class="empty-row">No reference reports selected yet</div>
+    </div>
+
+    <div class="modal-note-strip" id="uploadNoteStrip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      <span id="uploadNoteText">Only Section 16.3 tables and conventions are inspected. Prior-period numbers and narratives are treated strictly as examples, never carried forward.</span>
+    </div>
+
+    <div class="upload-actions">
+      <div class="immutable-note">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Original reference DOCX files are retained read-only.
+      </div>
+      <div class="modal-btn-group">
+        <button class="btn-secondary" id="cancelUploadBtn">Cancel</button>
+        <button class="btn-primary" id="analyzeTemplateBtn" disabled>Build table template <span>→</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== UPLOAD EXCEL & NEW GENERATION RUN MODAL ==================== -->
+<div class="modal hidden" id="generatorUploadModal" aria-modal="true" role="dialog" aria-labelledby="genUploadModalTitle">
+  <div class="modal-card modal-wide">
+    <button class="modal-close" id="closeGeneratorModal" aria-label="Close generator upload dialog">×</button>
+    <div class="modal-header-row">
+      <div>
+        <span class="eyebrow">NEW GENERATION RUN · EXCEL SOURCES</span>
+        <h2 id="genUploadModalTitle">Choose template &amp; upload Excel sources</h2>
+        <p>Select an approved template, specify the reporting interval when required, and upload one or more Excel workbooks.</p>
+      </div>
+      <span class="required-tag">XLSX / XLS</span>
+    </div>
+
+    <div class="run-fields generator-fields">
+      <div class="field">
+        <label for="generatorRunName">RUN NAME</label>
+        <input id="generatorRunName" value="PBRER 2026 — Section 16.3" placeholder="e.g. PBRER 2026 — Section 16.3">
+      </div>
+      <div class="field">
+        <label for="generatorTemplateSelect">APPROVED TEMPLATE</label>
+        <select id="generatorTemplateSelect">
+          <option value="">Select an approved template…</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field period-fields">
+      <div class="period-label-row">
+        <label>REPORTING INTERVAL <span class="optional" id="periodRequirementNote">REQUIRED WHEN TEMPLATE DEFINES AN INTERVAL COUNT</span></label>
+        <div class="period-presets">
+          <button type="button" class="preset-chip" data-preset="6m">Last 6M</button>
+          <button type="button" class="preset-chip" data-preset="1y">Last 1Y</button>
+          <button type="button" class="preset-chip" data-preset="ytd">YTD</button>
+          <button type="button" class="preset-chip" data-preset="clear">Clear</button>
+        </div>
+      </div>
+      <div class="period-row">
+        <input type="date" id="periodStart" aria-label="Reporting interval start">
+        <span>to</span>
+        <input type="date" id="periodEnd" aria-label="Reporting interval end">
+      </div>
+    </div>
+
+    <label class="dropzone excel-drop" id="excelDrop">
+      <input type="file" id="excelInput" accept=".xlsx,.xls" multiple>
+      <span class="drop-icon" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="8" y1="13" x2="16" y2="13"/>
+          <line x1="8" y1="17" x2="16" y2="17"/>
+        </svg>
+      </span>
+      <b>Drop source Excel workbooks here</b>
+      <span>or <u>browse .xlsx / .xls files</u></span>
+      <small>Multiple source workbooks supported · original files remain read-only</small>
+    </label>
+
+    <div class="selected-files" id="excelFiles">
+      <div class="empty-row">No Excel source files selected</div>
+    </div>
+
+    <div class="modal-note-strip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      <span>Stage 1 profiles each workbook into a Markdown data dictionary; Stage 2 proposes column mappings. Count unit and mappings require explicit approval before DOCX rendering.</span>
+    </div>
+
+    <div class="upload-actions">
+      <div class="immutable-note">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Source workbooks are retained read-only.
+      </div>
+      <div class="modal-btn-group">
+        <button class="btn-secondary" id="cancelGeneratorModalBtn">Cancel</button>
+        <button class="btn-primary" id="startGeneratorBtn" disabled>Explore &amp; map sources <span>→</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TABLE BLUEPRINT DETAIL INSPECTOR MODAL ==================== -->
+<div class="modal hidden" id="tableDetailModal" aria-modal="true" role="dialog" aria-labelledby="tableDetailTitle">
+  <div class="modal-card modal-xl">
+    <button class="modal-close" id="closeTableDetailModal" aria-label="Close table inspector">×</button>
+    <div class="modal-header-row">
+      <div>
+        <div class="workspace-badges" id="tableDetailBadges"></div>
+        <h2 id="tableDetailTitle">Table blueprint</h2>
+        <p id="tableDetailSub"></p>
+      </div>
+      <div class="modal-btn-group">
+        <button class="btn-ghost btn-xs" id="tableDetailPrevBtn" title="Previous table">← Prev</button>
+        <button class="btn-ghost btn-xs" id="tableDetailNextBtn" title="Next table">Next →</button>
+      </div>
+    </div>
+    <div id="tableDetailBody" class="table-detail-body"></div>
+  </div>
+</div>
+
+<!-- Add Tenant Modal -->
+<div class="modal hidden" id="tenantModal" aria-modal="true" role="dialog">
+  <div class="modal-card">
+    <button class="modal-close" id="closeTenantModal" aria-label="Close">×</button>
+    <span class="eyebrow">NEW WORKSPACE</span>
+    <h2>Add a tenant</h2>
+    <p>Tenant IDs organize local runs and templates by client. This local POC does not provide authentication or tenant access control.</p>
+    <div class="field">
+      <label for="newTenantId">TENANT ID</label>
+      <input id="newTenantId" placeholder="e.g. client-acme">
+    </div>
+    <div class="field">
+      <label for="newTenantName">DISPLAY NAME</label>
+      <input id="newTenantName" placeholder="e.g. Acme Pharmaceuticals">
+    </div>
+    <button class="btn-primary btn-full" id="createTenantBtn">Create workspace</button>
+  </div>
+</div>
+
+<!-- Markdown Artifact Viewer Modal -->
+<div class="modal hidden" id="artifactModal" aria-modal="true" role="dialog">
+  <div class="modal-card modal-xl">
+    <button class="modal-close" id="closeArtifactModal" aria-label="Close">×</button>
+    <div class="modal-header-row">
+      <div>
+        <span class="eyebrow">SOURCE DATA DICTIONARY</span>
+        <h2 id="artifactModalTitle">Artifact</h2>
+      </div>
+      <div class="modal-btn-group">
+        <button class="btn-ghost btn-xs" id="copyArtifactBtn">Copy</button>
+        <a class="btn-secondary btn-xs" id="downloadArtifactBtn" href="#" target="_blank">↓ Download</a>
+      </div>
+    </div>
+    <div id="artifactModalBody" class="md-preview artifact-preview-body"></div>
+  </div>
+</div>
+
+<!-- System & LLM Health Modal -->
+<div class="modal hidden" id="systemStatusModal" aria-modal="true" role="dialog">
+  <div class="modal-card">
+    <button class="modal-close" id="closeSystemStatusModal" aria-label="Close">×</button>
+    <span class="eyebrow">RUNTIME &amp; LLM STATUS</span>
+    <h2>Workbench engine</h2>
+    <div id="systemStatusDetails" class="status-details-grid"></div>
+    <p class="status-footnote">When Bedrock is enabled, schema metadata and workbook column headers (never raw row samples) are sent to your configured AWS Bedrock model.</p>
+  </div>
+</div>
+
+<!-- Help Modal -->
+<div class="modal hidden" id="helpModal" aria-modal="true" role="dialog">
+  <div class="modal-card">
+    <button class="modal-close" id="closeHelpModal" aria-label="Close">×</button>
+    <span class="eyebrow">WORKBENCH GUIDE</span>
+    <h2>Two-step workflow</h2>
+    <p><b>1. Template Generator:</b> Click <b>Upload DOCX</b> in the top-right corner to upload prior client PBRER reports. Inspect the Generic Table Blueprint, review and customize detected fields and <code>master.md</code>, then approve.</p>
+    <p><b>2. Generator:</b> Select an approved template, upload new Excel source workbooks, inspect auto-generated Markdown data dictionaries and proposed column mappings, choose the explicit counting unit, enter new-interval narratives, and build a styled DOCX copy.</p>
+    <p><b>Shortcuts:</b> Press <kbd>Ctrl+S</kbd> while editing a draft template to save changes, and <kbd>Esc</kbd> to dismiss any dialog.</p>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
